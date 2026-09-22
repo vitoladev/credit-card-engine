@@ -6,6 +6,13 @@ if (!base) {
   throw new Error("BASE_URL is required (make api-url after local-deploy)");
 }
 
+// Local Floci runs default to 100 req/s; the 1000 req/s NFR run targets a
+// real AWS stack with LOADTEST_RATE=1000.
+const rate = Number(__ENV.LOADTEST_RATE || 100);
+if (!Number.isInteger(rate) || rate <= 0) {
+  throw new Error(`LOADTEST_RATE must be a positive integer, got "${__ENV.LOADTEST_RATE}"`);
+}
+
 const batch = JSON.stringify([
   {
     name: "Ana",
@@ -22,11 +29,12 @@ export const options = {
   scenarios: {
     nfr: {
       executor: "constant-arrival-rate",
-      rate: 1000,
+      rate,
       timeUnit: "1s",
       duration: "10s",
-      preAllocatedVUs: 300,
-      maxVUs: 800,
+      // 300 and 800 VUs at 1000 req/s, scaled down with the rate.
+      preAllocatedVUs: Math.ceil(rate * 0.3),
+      maxVUs: Math.ceil(rate * 0.8),
     },
   },
   thresholds: {

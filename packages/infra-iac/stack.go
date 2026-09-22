@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsapigatewayv2"
@@ -26,6 +28,10 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		sprops = props.StackProps
 	}
 	stack := awscdk.NewStack(scope, &id, &sprops)
+	size, err := batchSize()
+	if err != nil {
+		panic(err)
+	}
 
 	table := awsdynamodb.NewTable(stack, jsii.String(tableID), &awsdynamodb.TableProps{
 		PartitionKey: &awsdynamodb.Attribute{
@@ -60,6 +66,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		Environment: lambdaEnv(map[string]*string{
 			"DECISIONS_TABLE": table.TableName(),
 			"QUEUE_URL":       queue.QueueUrl(),
+			"BATCH_SIZE":      jsii.String(size),
 		}),
 		Bundling: &awscdklambdagoalpha.BundlingOptions{
 			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`),
@@ -140,6 +147,20 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		Value: queue.QueueUrl(),
 	})
 	return stack
+}
+
+// batchSize reads BATCH_SIZE at synth time so an out-of-range value fails
+// the deploy instead of the Lambda's cold start.
+func batchSize() (string, error) {
+	s := os.Getenv("BATCH_SIZE")
+	if s == "" {
+		return strconv.Itoa(defaultBatchSize), nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > maxBatchSize {
+		return "", fmt.Errorf("BATCH_SIZE must be an integer in 1..%d, got %q", maxBatchSize, s)
+	}
+	return strconv.Itoa(n), nil
 }
 
 // lambdaEnv points the Lambdas at Floci when synthesising for it. Floci runs

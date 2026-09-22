@@ -6,14 +6,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"engine/internal/domain"
 	"engine/internal/queue"
 	"engine/internal/store"
 )
 
-// MaxCustomers is the largest batch accepted.
-const MaxCustomers = 1000
+const (
+	DefaultBatchSize = 100
+	MaxBatchSize     = 1000
+)
 
 var ErrBatchTooLarge = errors.New("batch too large")
 
@@ -22,19 +25,35 @@ type Accepted struct {
 	Queued  int    `json:"queued"`
 }
 
-type UseCase struct {
-	batches store.BatchStore
-	pub     queue.Publisher
+// ParseBatchSize reads the BATCH_SIZE setting: empty means DefaultBatchSize,
+// anything outside 1..MaxBatchSize is an error rather than a silent clamp.
+func ParseBatchSize(s string) (int, error) {
+	if s == "" {
+		return DefaultBatchSize, nil
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 || n > MaxBatchSize {
+		return 0, fmt.Errorf("BATCH_SIZE must be an integer in 1..%d, got %q", MaxBatchSize, s)
+	}
+	return n, nil
 }
 
-func New(batches store.BatchStore, pub queue.Publisher) UseCase {
-	return UseCase{batches: batches, pub: pub}
+type UseCase struct {
+	batches      store.BatchStore
+	pub          queue.Publisher
+	maxCustomers int
 }
+
+func New(batches store.BatchStore, pub queue.Publisher, maxCustomers int) UseCase {
+	return UseCase{batches: batches, pub: pub, maxCustomers: maxCustomers}
+}
+
+func (u UseCase) MaxCustomers() int { return u.maxCustomers }
 
 // Execute stores every item before publishing, so a message never names an
 // item that does not exist.
 func (u UseCase) Execute(ctx context.Context, customers []domain.Customer) (Accepted, error) {
-	if len(customers) > MaxCustomers {
+	if len(customers) > u.maxCustomers {
 		return Accepted{}, ErrBatchTooLarge
 	}
 	id := newID()

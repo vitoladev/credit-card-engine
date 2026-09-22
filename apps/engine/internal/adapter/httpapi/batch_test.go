@@ -192,17 +192,45 @@ func TestBatchRedeliveryLeavesReportUnchanged(t *testing.T) {
 	}
 }
 
-func TestBatchOverTheLimitStoresAndQueuesNothing(t *testing.T) {
-	h := newHarness(t)
-	one := `{"name":"Ana","cpf":"39053344705","credit_score":780,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000]}`
-	body := "[" + strings.Repeat(one+",", 1000) + one + "]"
-
-	resp := h.do("POST", "/evaluations/batch", body)
-	if resp.StatusCode != http.StatusUnprocessableEntity || resp.Body != `{"error":"batch_too_large","max":1000}` {
-		t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
+func batchOf(n int) string {
+	var b strings.Builder
+	b.WriteString("[")
+	for i := range n {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		b.WriteString(`{"name":"C` + strconv.Itoa(i) + `","cpf":"39053344705","credit_score":780,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000]}`)
 	}
-	if !h.mem.Empty() || len(h.q.Jobs) != 0 {
-		t.Fatal("stored or queued a rejected batch")
+	b.WriteString("]")
+	return b.String()
+}
+
+func TestBatchSizeLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		compose  func() (httpapi.Handler, *store.Memory, *queue.Memory)
+		accepted int
+		rejected string
+	}{
+		{"default", composed, 100, `{"error":"batch_too_large","max":100}`},
+		{"configured max", func() (httpapi.Handler, *store.Memory, *queue.Memory) { return composedWithBatchSize(1000) }, 1000, `{"error":"batch_too_large","max":1000}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, mem, q := tc.compose()
+
+			resp := post(t, h, "/evaluations/batch", batchOf(tc.accepted+1))
+			if resp.StatusCode != http.StatusUnprocessableEntity || resp.Body != tc.rejected {
+				t.Fatalf("status=%d body=%s", resp.StatusCode, resp.Body)
+			}
+			if !mem.Empty() || len(q.Jobs) != 0 {
+				t.Fatal("stored or queued a rejected batch")
+			}
+
+			resp = post(t, h, "/evaluations/batch", batchOf(tc.accepted))
+			if resp.StatusCode != http.StatusAccepted || len(q.Jobs) != tc.accepted {
+				t.Fatalf("status=%d jobs=%d", resp.StatusCode, len(q.Jobs))
+			}
+		})
 	}
 }
 
@@ -236,23 +264,6 @@ func TestUnknownIDsReturn404(t *testing.T) {
 		if resp.StatusCode != http.StatusNotFound || resp.Body != `{"error":"not_found"}` {
 			t.Fatalf("%s: status=%d body=%s", path, resp.StatusCode, resp.Body)
 		}
-	}
-}
-
-func TestBatchOfOneThousandIsAccepted(t *testing.T) {
-	h := newHarness(t)
-	var b strings.Builder
-	b.WriteString("[")
-	for i := range 1000 {
-		if i > 0 {
-			b.WriteString(",")
-		}
-		b.WriteString(`{"name":"C` + strconv.Itoa(i) + `","cpf":"39053344705","credit_score":780,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000]}`)
-	}
-	b.WriteString("]")
-	resp := h.do("POST", "/evaluations/batch", b.String())
-	if resp.StatusCode != http.StatusAccepted || len(h.q.Jobs) != 1000 {
-		t.Fatalf("status=%d jobs=%d", resp.StatusCode, len(h.q.Jobs))
 	}
 }
 

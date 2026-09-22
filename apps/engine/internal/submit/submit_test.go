@@ -13,7 +13,7 @@ import (
 func TestExecuteStoresThenEnqueuesOneJobPerCustomer(t *testing.T) {
 	q := queue.NewMemory()
 	mem := store.NewMemory()
-	got, err := submit.New(mem, q).Execute(t.Context(), []domain.Customer{
+	got, err := submit.New(mem, q, submit.DefaultBatchSize).Execute(t.Context(), []domain.Customer{
 		{Name: "Ana", CPF: "39053344705", CreditScore: 720},
 		{Name: "Bruno", CPF: "12345678909", CreditScore: 400},
 	})
@@ -49,11 +49,32 @@ func TestExecuteStoresThenEnqueuesOneJobPerCustomer(t *testing.T) {
 func TestExecuteRejectsABatchOverTheLimit(t *testing.T) {
 	q := queue.NewMemory()
 	mem := store.NewMemory()
-	_, err := submit.New(mem, q).Execute(t.Context(), make([]domain.Customer, submit.MaxCustomers+1))
+	_, err := submit.New(mem, q, 5).Execute(t.Context(), make([]domain.Customer, 6))
 	if !errors.Is(err, submit.ErrBatchTooLarge) {
 		t.Fatalf("err=%v", err)
 	}
 	if !mem.Empty() || len(q.Jobs) != 0 {
 		t.Fatal("stored or queued a rejected batch")
+	}
+}
+
+func TestParseBatchSize(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want int
+	}{
+		{"", 100},
+		{"1", 1},
+		{"1000", 1000},
+	} {
+		got, err := submit.ParseBatchSize(tc.in)
+		if err != nil || got != tc.want {
+			t.Fatalf("ParseBatchSize(%q) = %d, %v; want %d", tc.in, got, err, tc.want)
+		}
+	}
+	for _, in := range []string{"0", "1001", "-5", "abc", "10.5"} {
+		if got, err := submit.ParseBatchSize(in); err == nil {
+			t.Fatalf("ParseBatchSize(%q) = %d, want an error", in, got)
+		}
 	}
 }

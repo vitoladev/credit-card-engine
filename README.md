@@ -49,9 +49,11 @@ The decision is stored and can be read back; an unknown id returns `404`:
 curl -s "$BASE/evaluations/<decision_id>"
 ```
 
-`POST /evaluations/batch` accepts at most 1000 customers and returns `202`
-with `batch_id` and `queued`. A larger batch returns
-`422 {"error":"batch_too_large","max":1000}`. If any customer is invalid, it
+`POST /evaluations/batch` accepts at most `BATCH_SIZE` customers (default
+100, max 1000) and returns `202` with `batch_id` and `queued`. A larger batch
+returns `422 {"error":"batch_too_large","max":<BATCH_SIZE>}`. The default keeps
+local runs light; raise it with `BATCH_SIZE=1000 make local-deploy`. A value
+outside 1..1000 fails the synth. If any customer is invalid, it
 returns `422` with each violation's `index`. In both cases nothing is stored
 or queued. The worker drains SQS and decides each batch item. Then:
 
@@ -111,7 +113,7 @@ your Floci answers under another name on that network.
 | Target | What it does |
 |---|---|
 | `make test` | `turbo run test` — engine, lambdas, and stack |
-| `make loadtest` | k6 at 1000 req/s against `POST /evaluations/batch` (needs a local deploy) |
+| `make loadtest` | k6 at `LOADTEST_RATE` req/s (default 100) for 10 s against `POST /evaluations/batch` (needs a local deploy). The 1000 req/s NFR run is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack |
 | `make local-bootstrap` | CDK bootstrap on Floci account `000000000000` |
 | `make local-deploy` | `cdklocal deploy` |
 | `make api-url` | Prints the HTTP API base URL on the emulator |
@@ -123,6 +125,6 @@ your Floci answers under another name on that network.
 ```
 apps/engine/          use cases + CoR + cmds (http, worker)
 packages/infra-iac/   CDK in Go
-packages/loadtest/    k6 (1000 req/s batch via SQS)
+packages/loadtest/    k6 (batch via SQS, LOADTEST_RATE req/s, default 100)
 docs/                 architecture.md
 ```

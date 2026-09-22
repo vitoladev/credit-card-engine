@@ -33,7 +33,7 @@ func New(ev evaluate.UseCase, decisions store.DecisionStore, sub submit.UseCase,
 
 func Default() Handler {
 	mem := store.NewMemory()
-	return New(evaluate.New(rules.NewPolicy()), mem, submit.New(mem, queue.NewMemory()), report.New(mem))
+	return New(evaluate.New(rules.NewPolicy()), mem, submit.New(mem, queue.NewMemory(), submit.DefaultBatchSize), report.New(mem))
 }
 
 func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -129,7 +129,7 @@ func (h Handler) enqueue(ctx context.Context, req events.APIGatewayV2HTTPRequest
 	}
 	acc, err := h.submit.Execute(ctx, customers)
 	if errors.Is(err, submit.ErrBatchTooLarge) {
-		return jsonResp(422, map[string]any{"error": "batch_too_large", "max": submit.MaxCustomers}), nil
+		return jsonResp(422, map[string]any{"error": "batch_too_large", "max": h.submit.MaxCustomers()}), nil
 	}
 	if err != nil {
 		return jsonResp(500, map[string]string{"error": "enqueue_failed"}), nil //nolint:nilerr // the adapter maps the error to a status code

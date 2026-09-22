@@ -102,3 +102,44 @@ func TestLambdaEndpointReachesFloci(t *testing.T) {
 		})
 	}
 }
+
+func httpLambdaBatchSize(t *testing.T) any {
+	t.Helper()
+	app := awscdk.NewApp(nil)
+	template := assertions.Template_FromStack(NewStack(app, "Test", nil), nil)
+	var got []any
+	for _, fn := range *template.FindResources(jsii.String("AWS::Lambda::Function"), nil) {
+		vars := (*fn)["Properties"].(map[string]any)["Environment"].(map[string]any)["Variables"].(map[string]any)
+		if v, ok := vars["BATCH_SIZE"]; ok {
+			got = append(got, v)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("BATCH_SIZE on %d Lambdas, want only the HTTP one", len(got))
+	}
+	return got[0]
+}
+
+func TestHTTPLambdaGetsBatchSize(t *testing.T) {
+	t.Cleanup(jsii.Close)
+	for _, tc := range []struct{ env, want string }{
+		{"", "100"},
+		{"1000", "1000"},
+	} {
+		t.Run("BATCH_SIZE="+tc.env, func(t *testing.T) {
+			t.Setenv("BATCH_SIZE", tc.env)
+			if got := httpLambdaBatchSize(t); got != tc.want {
+				t.Fatalf("got %v want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBatchSizeOutOfRangeFailsSynth(t *testing.T) {
+	for _, env := range []string{"0", "1001", "abc"} {
+		t.Setenv("BATCH_SIZE", env)
+		if got, err := batchSize(); err == nil {
+			t.Fatalf("BATCH_SIZE=%q gave %s, want an error", env, got)
+		}
+	}
+}

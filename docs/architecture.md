@@ -15,7 +15,7 @@ and the stack describe the cut.
 | `internal/domain` | Customer profile, its validation, and the decision. No I/O. |
 | `internal/rules` | Chain of Responsibility plus the `AmountPolicy` strategy. `NewPolicy()` is the policy factory. |
 | `internal/evaluate` | Use case: one customer → `Result`. Applies the `rules.Policy`: the chain decides, the amount policy sizes an approval. Stores nothing; the caller records the decision. |
-| `internal/submit` | Use case: at most 1000 customers → a `batch_id`, every batch item stored `QUEUED`, then one SQS message per item. |
+| `internal/submit` | Use case: at most `BATCH_SIZE` customers (default 100, max 1000) → a `batch_id`, every batch item stored `QUEUED`, then one SQS message per item. |
 | `internal/processjob` | Use case: queue message → evaluate → `BatchStore.Decide`. A repeated delivery is a no-op. |
 | `internal/report` | Use case: `batch_id` → `Report` (derived batch status, counters, approved, denied, failed, cancelled, total). |
 | `internal/queue` / `internal/store` | Ports: `queue.Publisher`, `store.BatchStore` (`Create`, `Decide`, `Report`), `store.DecisionStore` (`Save`, `Get`). Memory in tests; SQS and DynamoDB in adapters. The store owns the item status transitions. |
@@ -24,7 +24,7 @@ and the stack describe the cut.
 | `internal/adapter/sqspub` / `ddb` | `SendMessageBatch` publisher; both store ports on one DynamoDB table. |
 | `cmd/http` `cmd/worker` | Composition root. |
 | `packages/infra-iac` | CDK: HTTP API, two Lambdas, SQS, DynamoDB, logs, alarms. |
-| `packages/loadtest` | k6 at **1000 req/s** on `POST /evaluations/batch` (10s = 10k jobs). |
+| `packages/loadtest` | k6 at `LOADTEST_RATE` req/s (default **100** locally) on `POST /evaluations/batch` for 10s. The 1000 req/s NFR run (10k jobs) is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack. |
 
 ## Runtime
 
@@ -72,7 +72,7 @@ Two paths, on purpose:
   `GET /evaluations/{id}`.
 - **Batch** (`POST /evaluations/batch` → SQS → worker →
   `GET /batches/{id}/report`): HTTP stores the batch items and enqueues. This
-  is the 1000 req/s loadtest path.
+  is the loadtest path (1000 req/s NFR on real AWS, 100 req/s by default on Floci).
 
 DynamoDB runs **after** the decision. If the table is down on the sync path,
 the decision is already computed and the store returns `500` (the client
@@ -80,9 +80,13 @@ retries). On batch, HTTP already returned `202`; SQS retries the worker.
 
 ### Batch submission
 
-`POST /evaluations/batch` accepts at most **1000** customers. A larger batch
-returns `422 {"error":"batch_too_large","max":1000}` and nothing is stored or
-queued. Otherwise `submit`:
+`POST /evaluations/batch` accepts at most **`BATCH_SIZE`** customers (default
+100, max 1000). A larger batch returns
+`422 {"error":"batch_too_large","max":<BATCH_SIZE>}` and nothing is stored or
+queued. The CDK stack passes `BATCH_SIZE` from the synth environment to the
+HTTP Lambda and fails the synth on a value outside 1..1000; the Lambda fails
+at startup on one as well. `scripts/floci.env` defaults it to 100 so local runs
+stay light; raise it with `BATCH_SIZE=1000 make local-deploy`. Otherwise `submit`:
 
 1. creates a `batch_id`;
 2. stores `META` (`queued=N`, `decided=0`, `failed=0`, `cancelled=0`) and one
@@ -257,7 +261,7 @@ new file plus one `SetNext` (or a new `AmountPolicy`) in `rules.NewPolicy()`.
 |---|---|
 | **Latency ≤ 1s** | Sync engine, no I/O on the hot path. Lambda timeout 3s, 256 MB, arm64, **no VPC**. p99 alarmed at 800 ms. |
 | **Accuracy** | Customers validated at the edge (CPF check digits, no negatives). Deterministic rules. Table tests in `domain`, `rules`, and `evaluate`. Stable reason code per rule. |
-| **Scale 10k/min** | NFR floor. The cut demonstrates **1000 req/s** on batch: HTTP enqueues (202), worker processes batch 10, Dynamo on-demand. Stage at 1200 rps / 2400 burst. k6: 1000/s × 10s = 10k jobs. |
+| **Scale 10k/min** | NFR floor. The cut demonstrates **1000 req/s** on batch: HTTP enqueues (202), worker processes batch 10, Dynamo on-demand. Stage at 1200 rps / 2400 burst. k6: `LOADTEST_RATE=1000 make loadtest` against real AWS, 1000/s × 10s = 10k jobs (local default 100 req/s). |
 | **Extensibility** | `rules.Handler` + `rules.AmountPolicy`, assembled in `rules.NewPolicy()`. `architecture_test.go` keeps domain off AWS. |
 | **LGPD** | CPF masked on `Result`. Encryption at rest managed. IAM only on the decisions table. No API auth in this cut (fictional data); production would be IAM on the HTTP API. |
 | **Observability** | 14-day logs. Error and duration alarms. Dashboard for volume and p99. Reason codes in response JSON = deny rate per rule. |
@@ -272,7 +276,7 @@ Wire types: `events.APIGatewayV2HTTPRequest` / `HTTPResponse`.
 | `GET` | `/health` | — | `{"status":"ok"}` |
 | `POST` | `/evaluations` | one `Customer` | `200` + `{decision_id, ...Result}` (sync, 1s SLO); `400` malformed JSON; `422` invalid customer |
 | `GET` | `/evaluations/{id}` | — | `200` + the same `{decision_id, ...Result}`; `404 {"error":"not_found"}` |
-| `POST` | `/evaluations/batch` | `{customers:[...]}` or array, at most 1000 | `202` + `{batch_id, queued}`; `422` with indexed violations or `batch_too_large`, nothing stored or published |
+| `POST` | `/evaluations/batch` | `{customers:[...]}` or array, at most `BATCH_SIZE` (default 100, max 1000) | `202` + `{batch_id, queued}`; `422` with indexed violations or `batch_too_large`, nothing stored or published |
 | `GET` | `/batches/{id}/report` | — | `200` + report; `404 {"error":"not_found"}` |
 
 The report:

@@ -18,10 +18,16 @@ const (
 	tablePartitionKey = "pk"
 	tableSortKey      = "sk"
 
-	// Loadtest: 1000 req/s on POST /evaluations/batch (SQS enqueue).
+	// Loadtest: 100 req/s by default on Floci; the 1000 req/s NFR run is
+	// LOADTEST_RATE=1000 make loadtest against a real AWS stack.
 	// Stage headroom above 10k evals/min (~167 rps).
 	stageRateLimit  = 1200
 	stageBurstLimit = 2400
+
+	// BATCH_SIZE caps customers per POST /evaluations/batch. The default keeps
+	// local runs light; the engine refuses anything above the hard max.
+	defaultBatchSize = 100
+	maxBatchSize     = 1000
 
 	lambdaTimeoutS = 3
 	lambdaMemoryMB = 256

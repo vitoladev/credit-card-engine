@@ -12,7 +12,7 @@
     },
     "loadtest": {
       "cache": false,
-      "passThroughEnv": ["BASE_URL"]
+      "passThroughEnv": ["BASE_URL", "LOADTEST_RATE"]
     }
   }
 }

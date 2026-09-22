@@ -31,10 +31,14 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 	if table == "" || queueURL == "" {
 		return httpapi.Handler{}, errors.New("DECISIONS_TABLE and QUEUE_URL required")
 	}
+	batchSize, err := submit.ParseBatchSize(os.Getenv("BATCH_SIZE"))
+	if err != nil {
+		return httpapi.Handler{}, err
+	}
 	cfg, err := awsconfig.Load(ctx)
 	if err != nil {
 		return httpapi.Handler{}, err
 	}
 	st := ddb.New(cfg, table)
-	return httpapi.New(evaluate.New(rules.NewPolicy()), st, submit.New(st, sqspub.New(cfg, queueURL)), report.New(st)), nil
+	return httpapi.New(evaluate.New(rules.NewPolicy()), st, submit.New(st, sqspub.New(cfg, queueURL), batchSize), report.New(st)), nil
 }
