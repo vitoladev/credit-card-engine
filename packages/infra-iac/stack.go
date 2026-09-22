@@ -47,8 +47,15 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 
+	dlq := awssqs.NewQueue(stack, jsii.String(dlqID), &awssqs.QueueProps{
+		RetentionPeriod: awscdk.Duration_Days(jsii.Number(dlqRetentionDays)),
+	})
 	queue := awssqs.NewQueue(stack, jsii.String(queueID), &awssqs.QueueProps{
 		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(lambdaTimeoutS * 6)),
+		DeadLetterQueue: &awssqs.DeadLetterQueue{
+			Queue:           dlq,
+			MaxReceiveCount: jsii.Number(maxReceiveCount),
+		},
 	})
 
 	fnLogs := awslogs.NewLogGroup(stack, jsii.String("EvaluateLogs"), &awslogs.LogGroupProps{
@@ -96,7 +103,34 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 	table.GrantReadWriteData(worker)
 	queue.GrantConsumeMessages(worker)
 	worker.AddEventSource(awslambdaeventsources.NewSqsEventSource(queue, &awslambdaeventsources.SqsEventSourceProps{
-		BatchSize: jsii.Number(10),
+		BatchSize:               jsii.Number(sqsBatchSize),
+		ReportBatchItemFailures: jsii.Bool(true),
+	}))
+
+	dlqLogs := awslogs.NewLogGroup(stack, jsii.String("DlqConsumerLogs"), &awslogs.LogGroupProps{
+		Retention:     awslogs.RetentionDays_TWO_WEEKS,
+		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
+	})
+	dlqConsumer := awscdklambdagoalpha.NewGoFunction(stack, jsii.String(dlqFunctionID), &awscdklambdagoalpha.GoFunctionProps{
+		Runtime:      awslambda.Runtime_PROVIDED_AL2023(),
+		Architecture: awslambda.Architecture_ARM_64(),
+		Entry:        jsii.String(dlqEntry()),
+		Timeout:      awscdk.Duration_Seconds(jsii.Number(lambdaTimeoutS)),
+		MemorySize:   jsii.Number(lambdaMemoryMB),
+		Tracing:      awslambda.Tracing_ACTIVE,
+		LogGroup:     dlqLogs,
+		Environment: lambdaEnv(map[string]*string{
+			"DECISIONS_TABLE": table.TableName(),
+		}),
+		Bundling: &awscdklambdagoalpha.BundlingOptions{
+			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`),
+		},
+	})
+	table.GrantReadWriteData(dlqConsumer)
+	// The event source grants consume on the DLQ, and nothing else on SQS.
+	dlqConsumer.AddEventSource(awslambdaeventsources.NewSqsEventSource(dlq, &awslambdaeventsources.SqsEventSourceProps{
+		BatchSize:               jsii.Number(sqsBatchSize),
+		ReportBatchItemFailures: jsii.Bool(true),
 	}))
 
 	api := awsapigatewayv2.NewHttpApi(stack, jsii.String(apiID), &awsapigatewayv2.HttpApiProps{
@@ -116,6 +150,9 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		{"/evaluations/{id}", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
 		{"/evaluations/batch", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
 		{"/batches/{id}/report", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
+		{"/batches/{id}/items/{index}/retry", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
+		{"/batches/{id}/items/{index}/cancel", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
+		{"/batches/{id}/retry-failed", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
 		{"/health", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
 	} {
 		api.AddRoutes(&awsapigatewayv2.AddRoutesOptions{
@@ -145,6 +182,9 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 	})
 	awscdk.NewCfnOutput(stack, jsii.String("EvaluationQueueUrl"), &awscdk.CfnOutputProps{
 		Value: queue.QueueUrl(),
+	})
+	awscdk.NewCfnOutput(stack, jsii.String("EvaluationDlqUrl"), &awscdk.CfnOutputProps{
+		Value: dlq.QueueUrl(),
 	})
 	return stack
 }

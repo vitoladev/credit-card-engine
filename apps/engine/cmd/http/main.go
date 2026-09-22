@@ -12,6 +12,7 @@ import (
 	"engine/internal/adapter/httpapi"
 	"engine/internal/adapter/sqspub"
 	"engine/internal/evaluate"
+	"engine/internal/recovery"
 	"engine/internal/report"
 	"engine/internal/rules"
 	"engine/internal/submit"
@@ -40,5 +41,6 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 		return httpapi.Handler{}, err
 	}
 	st := ddb.New(cfg, table)
-	return httpapi.New(evaluate.New(rules.NewPolicy()), st, submit.New(st, sqspub.New(cfg, queueURL), batchSize), report.New(st)), nil
+	pub := sqspub.New(cfg, queueURL)
+	return httpapi.New(evaluate.New(rules.NewPolicy()), st, submit.New(st, pub, batchSize), report.New(st), recovery.New(st, pub)), nil
 }

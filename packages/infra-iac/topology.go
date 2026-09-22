@@ -10,6 +10,8 @@ const (
 	functionID       = "Evaluate"
 	workerFunctionID = "Worker"
 	queueID          = "EvaluationJobs"
+	dlqID            = "EvaluationJobsDLQ"
+	dlqFunctionID    = "DlqConsumer"
 	apiID            = "Api"
 	tableID          = "Decisions"
 	alarmID          = "EvaluateAlarms"
@@ -28,6 +30,11 @@ const (
 	// local runs light; the engine refuses anything above the hard max.
 	defaultBatchSize = 100
 	maxBatchSize     = 1000
+
+	// A record that fails this many receives moves to the DLQ (ADR 0001).
+	maxReceiveCount  = 3
+	dlqRetentionDays = 14
+	sqsBatchSize     = 10
 
 	lambdaTimeoutS = 3
 	lambdaMemoryMB = 256
@@ -48,4 +55,8 @@ func lambdaEntry() string {
 
 func workerEntry() string {
 	return filepath.Join(repoRoot(), "apps", "engine", "cmd", "worker")
+}
+
+func dlqEntry() string {
+	return filepath.Join(repoRoot(), "apps", "engine", "cmd", "dlq")
 }

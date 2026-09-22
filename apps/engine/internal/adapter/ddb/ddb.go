@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -167,33 +168,92 @@ func (st *Store) Decide(ctx context.Context, batchID string, index, attempt int,
 	if err != nil {
 		return err
 	}
-	_, err = st.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+	err = st.move(ctx, batchID, index, store.Decided, store.Queued, itemUpdate{
+		update: "SET #status = :to, #result = :result",
+		cond:   "#status = :from AND #attempts = :attempt",
+		names:  map[string]string{"#result": "result", "#attempts": "attempts"},
+		values: map[string]types.AttributeValue{":attempt": nAttr(attempt), ":result": sAttr(string(result))},
+	})
+	return transitionErr(err)
+}
+
+// Fail moves the item from QUEUED to FAILED, conditional on this attempt.
+func (st *Store) Fail(ctx context.Context, batchID string, index, attempt int) error {
+	err := st.move(ctx, batchID, index, store.Failed, store.Queued, itemUpdate{
+		update: "SET #status = :to",
+		cond:   "#status = :from AND #attempts = :attempt",
+		names:  map[string]string{"#attempts": "attempts"},
+		values: map[string]types.AttributeValue{":attempt": nAttr(attempt)},
+	})
+	return transitionErr(err)
+}
+
+// Retry moves the item from FAILED on this attempt to QUEUED on the next one.
+// The attempt cap is part of the condition, so a concurrent retry cannot
+// exceed it.
+func (st *Store) Retry(ctx context.Context, batchID string, index, attempt int) error {
+	err := st.move(ctx, batchID, index, store.Queued, store.Failed, itemUpdate{
+		update: "SET #status = :to, #attempts = #attempts + :one",
+		cond:   "#status = :from AND #attempts = :attempt AND #attempts < :max",
+		names:  map[string]string{"#attempts": "attempts"},
+		values: map[string]types.AttributeValue{":attempt": nAttr(attempt), ":max": nAttr(store.MaxAttempts), ":one": nAttr(1)},
+	})
+	old, ok := conditionFailed(err)
+	if !ok || len(old) == 0 {
+		return transitionErr(err)
+	}
+	if n, err := readN(old, "attempts"); err == nil && n >= store.MaxAttempts && isStatus(old, store.Failed) {
+		return store.ErrMaxAttempts
+	}
+	return store.ErrInvalidTransition
+}
+
+// Cancel moves the item from FAILED to CANCELLED. An item already CANCELLED
+// is left as it is and the call succeeds.
+func (st *Store) Cancel(ctx context.Context, batchID string, index int) error {
+	err := st.move(ctx, batchID, index, store.Cancelled, store.Failed, itemUpdate{
+		update: "SET #status = :to",
+		cond:   "#status = :from",
+	})
+	if old, ok := conditionFailed(err); ok && isStatus(old, store.Cancelled) {
+		return nil
+	}
+	return transitionErr(err)
+}
+
+// itemUpdate is the item half of a transition. Its expressions may also use
+// #status, :from, and :to, which move sets.
+type itemUpdate struct {
+	update, cond string
+	names        map[string]string
+	values       map[string]types.AttributeValue
+}
+
+// move changes one item's status and the META counters of both statuses in
+// one transaction, conditional on the item.
+func (st *Store) move(ctx context.Context, batchID string, index int, to, from store.ItemStatus, u itemUpdate) error {
+	names := map[string]string{"#status": "status"}
+	maps.Copy(names, u.names)
+	vals := map[string]types.AttributeValue{":from": sAttr(string(from)), ":to": sAttr(string(to))}
+	maps.Copy(vals, u.values)
+	_, err := st.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
 		TransactItems: []types.TransactWriteItem{
 			{Update: &types.Update{
-				TableName:           aws.String(st.table),
-				Key:                 itemKey(batchID, index),
-				UpdateExpression:    aws.String("SET #status = :decided, #result = :result"),
-				ConditionExpression: aws.String("#status = :queued AND #attempts = :attempt"),
-				ExpressionAttributeNames: map[string]string{
-					"#status":   "status",
-					"#result":   "result",
-					"#attempts": "attempts",
-				},
-				ExpressionAttributeValues: map[string]types.AttributeValue{
-					":decided": sAttr(string(store.Decided)),
-					":queued":  sAttr(string(store.Queued)),
-					":attempt": nAttr(attempt),
-					":result":  sAttr(string(result)),
-				},
+				TableName:                           aws.String(st.table),
+				Key:                                 itemKey(batchID, index),
+				UpdateExpression:                    aws.String(u.update),
+				ConditionExpression:                 aws.String(u.cond),
+				ExpressionAttributeNames:            names,
+				ExpressionAttributeValues:           vals,
 				ReturnValuesOnConditionCheckFailure: types.ReturnValuesOnConditionCheckFailureAllOld,
 			}},
 			{Update: &types.Update{
 				TableName:        aws.String(st.table),
 				Key:              metaKey(batchID),
-				UpdateExpression: aws.String("ADD #queued :minus, #decided :one"),
+				UpdateExpression: aws.String("ADD #from :minus, #to :one"),
 				ExpressionAttributeNames: map[string]string{
-					"#queued":  "queued",
-					"#decided": "decided",
+					"#from": counterOf(from),
+					"#to":   counterOf(to),
 				},
 				ExpressionAttributeValues: map[string]types.AttributeValue{
 					":minus": nAttr(-1),
@@ -202,36 +262,90 @@ func (st *Store) Decide(ctx context.Context, batchID string, index, attempt int,
 			}},
 		},
 	})
-	return transitionErr(err)
+	return err
+}
+
+func counterOf(s store.ItemStatus) string {
+	return strings.ToLower(string(s))
+}
+
+func isStatus(row map[string]types.AttributeValue, s store.ItemStatus) bool {
+	v, err := readS(row, "status")
+	return err == nil && v == string(s)
+}
+
+// conditionFailed returns the item as it was when its condition failed. An
+// empty item means the item does not exist.
+func conditionFailed(err error) (map[string]types.AttributeValue, bool) {
+	var canceled *types.TransactionCanceledException
+	if !errors.As(err, &canceled) || len(canceled.CancellationReasons) == 0 {
+		return nil, false
+	}
+	item := canceled.CancellationReasons[0]
+	if aws.ToString(item.Code) != "ConditionalCheckFailed" {
+		return nil, false
+	}
+	return item.Item, true
 }
 
 // transitionErr maps a failed item condition to ErrNotFound when the item does
 // not exist and to ErrInvalidTransition when it is in another state.
 func transitionErr(err error) error {
-	var canceled *types.TransactionCanceledException
-	if !errors.As(err, &canceled) || len(canceled.CancellationReasons) == 0 {
+	old, ok := conditionFailed(err)
+	if !ok {
 		return err
 	}
-	item := canceled.CancellationReasons[0]
-	if aws.ToString(item.Code) != "ConditionalCheckFailed" {
-		return err
-	}
-	if len(item.Item) == 0 {
+	if len(old) == 0 {
 		return store.ErrNotFound
 	}
 	return store.ErrInvalidTransition
 }
 
+func (st *Store) Item(ctx context.Context, batchID string, index int) (store.Item, error) {
+	out, err := st.client.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(st.table),
+		Key:            itemKey(batchID, index),
+		ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return store.Item{}, err
+	}
+	if out.Item == nil {
+		return store.Item{}, store.ErrNotFound
+	}
+	return batchItem(out.Item)
+}
+
+// Failed reads the batch's failed items with one paginated Query, filtered to
+// META (to tell an unknown batch apart) and FAILED items.
+func (st *Store) Failed(ctx context.Context, batchID string) ([]store.Item, error) {
+	b, err := st.query(ctx, batchID, &dynamodb.QueryInput{
+		FilterExpression:         aws.String("attribute_exists(#queued) OR #status = :failed"),
+		ExpressionAttributeNames: map[string]string{"#queued": "queued", "#status": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":failed": sAttr(string(store.Failed)),
+		},
+	})
+	return b.Items, err
+}
+
 // Report reads the whole batch with one paginated Query on pk.
 func (st *Store) Report(ctx context.Context, batchID string) (store.Batch, error) {
+	return st.query(ctx, batchID, &dynamodb.QueryInput{})
+}
+
+// query runs one paginated Query on pk with in's filter, if any.
+func (st *Store) query(ctx context.Context, batchID string, in *dynamodb.QueryInput) (store.Batch, error) {
 	b := store.Batch{ID: batchID}
 	found := false
-	p := dynamodb.NewQueryPaginator(st.client, &dynamodb.QueryInput{
-		TableName:                 aws.String(st.table),
-		KeyConditionExpression:    aws.String("pk = :pk"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{":pk": sAttr("BATCH#" + batchID)},
-		ConsistentRead:            aws.Bool(true),
-	})
+	in.TableName = aws.String(st.table)
+	in.KeyConditionExpression = aws.String("pk = :pk")
+	if in.ExpressionAttributeValues == nil {
+		in.ExpressionAttributeValues = map[string]types.AttributeValue{}
+	}
+	in.ExpressionAttributeValues[":pk"] = sAttr("BATCH#" + batchID)
+	in.ConsistentRead = aws.Bool(true)
+	p := dynamodb.NewQueryPaginator(st.client, in)
 	for p.HasMorePages() {
 		page, err := p.NextPage(ctx)
 		if err != nil {

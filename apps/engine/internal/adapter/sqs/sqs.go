@@ -23,11 +23,15 @@ func Default() Handler {
 	return New(processjob.New(evaluate.New(rules.NewPolicy()), store.NewMemory()))
 }
 
-func (h Handler) Handle(ctx context.Context, ev events.SQSEvent) error {
+// Handle lists only the records that failed, so SQS redelivers those and
+// keeps the rest. A record that keeps failing, including one whose item does
+// not exist, reaches the DLQ after maxReceiveCount receives.
+func (h Handler) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEventResponse, error) {
+	var resp events.SQSEventResponse
 	for _, rec := range ev.Records {
 		if err := h.jobs.Execute(ctx, []byte(rec.Body)); err != nil {
-			return err
+			resp.BatchItemFailures = append(resp.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: rec.MessageId})
 		}
 	}
-	return nil
+	return resp, nil
 }

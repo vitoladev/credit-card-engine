@@ -61,10 +61,30 @@ or queued. The worker drains SQS and decides each batch item. Then:
 curl -s "$BASE/batches/<batch_id>/report"
 ```
 
-The report shows the batch status (`PROCESSING` while items are queued, then
-`COMPLETED`), the counters, the `approved`, `denied`, `failed`, and
-`cancelled` items with a masked CPF, and `total_revolving_amount_cents` over
-the approved items.
+The report shows the batch status (`PROCESSING` while items are queued,
+`NEEDS_ATTENTION` when none is queued and some item failed, `COMPLETED` when
+every item is decided or cancelled), the counters, the `approved`, `denied`,
+`failed`, and `cancelled` items with a masked CPF and their `attempts`, and
+`total_revolving_amount_cents` over the approved items.
+
+A batch item that still fails after 3 deliveries lands in the DLQ, and the
+DLQ consumer marks it `FAILED`. An operator then retries or cancels it (at
+most 5 attempts per item):
+
+```bash
+# Retry one failed item: 202 {"index":0,"attempts":2}
+curl -s -X POST "$BASE/batches/<batch_id>/items/0/retry"
+# Retry every failed item under 5 attempts: 202 {"requeued":<n>}
+curl -s -X POST "$BASE/batches/<batch_id>/retry-failed"
+# Cancel one failed item: 200 {"index":0,"status":"CANCELLED"}, again 200
+curl -s -X POST "$BASE/batches/<batch_id>/items/0/cancel"
+```
+
+Retrying or cancelling an item that is not `FAILED` returns
+`409 {"error":"invalid_transition"}`; a retry at 5 attempts returns
+`409 {"error":"max_attempts_reached"}`. If the decision of `POST /evaluations`
+cannot be stored, it returns `503 {"error":"decision_not_recorded"}` and no
+decision.
 
 The Dev Container compose already starts Floci. Go 1.27, Node 22, AWS CLI,
 `cdklocal`, Turborepo, and k6 ship in the image. Dummy credentials

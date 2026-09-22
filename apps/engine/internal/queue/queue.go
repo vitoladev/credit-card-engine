@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
 
 	"engine/internal/domain"
@@ -23,16 +24,35 @@ type Publisher interface {
 }
 
 type Memory struct {
-	mu   sync.Mutex
-	Jobs []Job
+	mu        sync.Mutex
+	Jobs      []Job
+	failNextN int
 }
 
 func NewMemory() *Memory { return &Memory{} }
 
+// FailNextPublishes drops the next n jobs and reports them as failed. Tests only.
+func (m *Memory) FailNextPublishes(n int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.failNextN = n
+}
+
 func (m *Memory) Publish(_ context.Context, jobs []Job) ([]int, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.Jobs = append(m.Jobs, jobs...)
+	var failed []int
+	for _, job := range jobs {
+		if m.failNextN > 0 {
+			m.failNextN--
+			failed = append(failed, job.Index)
+			continue
+		}
+		m.Jobs = append(m.Jobs, job)
+	}
+	if len(failed) > 0 {
+		return failed, errors.New("injected publish failure")
+	}
 	return nil, nil
 }
 

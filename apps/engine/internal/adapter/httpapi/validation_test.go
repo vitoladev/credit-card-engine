@@ -12,6 +12,7 @@ import (
 	"engine/internal/domain"
 	"engine/internal/evaluate"
 	"engine/internal/queue"
+	"engine/internal/recovery"
 	"engine/internal/report"
 	"engine/internal/rules"
 	"engine/internal/store"
@@ -36,7 +37,7 @@ func composed() (httpapi.Handler, *store.Memory, *queue.Memory) {
 func composedWithBatchSize(size int) (httpapi.Handler, *store.Memory, *queue.Memory) {
 	mem := store.NewMemory()
 	q := queue.NewMemory()
-	return httpapi.New(evaluate.New(rules.NewPolicy()), mem, submit.New(mem, q, size), report.New(mem)), mem, q
+	return httpapi.New(evaluate.New(rules.NewPolicy()), mem, submit.New(mem, q, size), report.New(mem), recovery.New(mem, q)), mem, q
 }
 
 func post(t *testing.T, h httpapi.Handler, path, body string) events.APIGatewayV2HTTPResponse {

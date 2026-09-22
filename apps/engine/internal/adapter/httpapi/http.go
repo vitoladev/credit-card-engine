@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -14,6 +15,7 @@ import (
 	"engine/internal/domain"
 	"engine/internal/evaluate"
 	"engine/internal/queue"
+	"engine/internal/recovery"
 	"engine/internal/report"
 	"engine/internal/rules"
 	"engine/internal/store"
@@ -25,15 +27,17 @@ type Handler struct {
 	decisions store.DecisionStore
 	submit    submit.UseCase
 	report    report.UseCase
+	recovery  recovery.UseCase
 }
 
-func New(ev evaluate.UseCase, decisions store.DecisionStore, sub submit.UseCase, rep report.UseCase) Handler {
-	return Handler{evaluate: ev, decisions: decisions, submit: sub, report: rep}
+func New(ev evaluate.UseCase, decisions store.DecisionStore, sub submit.UseCase, rep report.UseCase, rec recovery.UseCase) Handler {
+	return Handler{evaluate: ev, decisions: decisions, submit: sub, report: rep, recovery: rec}
 }
 
 func Default() Handler {
 	mem := store.NewMemory()
-	return New(evaluate.New(rules.NewPolicy()), mem, submit.New(mem, queue.NewMemory(), submit.DefaultBatchSize), report.New(mem))
+	q := queue.NewMemory()
+	return New(evaluate.New(rules.NewPolicy()), mem, submit.New(mem, q, submit.DefaultBatchSize), report.New(mem), recovery.New(mem, q))
 }
 
 func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -55,8 +59,9 @@ func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 		return h.one(ctx, req)
 	case method == "POST" && path == "/evaluations/batch":
 		return h.enqueue(ctx, req)
-	}
-	if method != "GET" {
+	case method == "POST":
+		return h.recoverItems(ctx, path), nil
+	case method != "GET":
 		return notFound(), nil
 	}
 	if id, ok := pathID(path, "/evaluations/", ""); ok {
@@ -96,8 +101,9 @@ func (h Handler) one(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 	}
 	r := h.evaluate.Execute(ctx, c)
 	id := newID()
+	// Fail closed (ADR 0001): a decision that was not recorded is not returned.
 	if err := h.decisions.Save(ctx, id, c, r); err != nil {
-		return jsonResp(500, map[string]string{"error": "store_failed"}), nil //nolint:nilerr // the adapter maps the error to a status code
+		return jsonResp(503, map[string]string{"error": "decision_not_recorded"}), nil //nolint:nilerr // the adapter maps the error to a status code
 	}
 	return jsonResp(200, decisionResponse{DecisionID: id, Result: r}), nil
 }
@@ -131,10 +137,70 @@ func (h Handler) enqueue(ctx context.Context, req events.APIGatewayV2HTTPRequest
 	if errors.Is(err, submit.ErrBatchTooLarge) {
 		return jsonResp(422, map[string]any{"error": "batch_too_large", "max": h.submit.MaxCustomers()}), nil
 	}
+	if errors.Is(err, submit.ErrNotRecorded) {
+		return jsonResp(503, map[string]string{"error": "batch_not_recorded"}), nil
+	}
 	if err != nil {
-		return jsonResp(500, map[string]string{"error": "enqueue_failed"}), nil //nolint:nilerr // the adapter maps the error to a status code
+		return jsonResp(503, map[string]string{"error": "enqueue_failed"}), nil //nolint:nilerr // the adapter maps the error to a status code
 	}
 	return jsonResp(202, acc), nil
+}
+
+// recoverItems serves the operator routes on failed batch items.
+func (h Handler) recoverItems(ctx context.Context, path string) events.APIGatewayV2HTTPResponse {
+	if id, ok := pathID(path, "/batches/", "/retry-failed"); ok {
+		n, err := h.recovery.RetryFailed(ctx, id)
+		if err != nil {
+			return recoveryErr(err)
+		}
+		return jsonResp(202, map[string]int{"requeued": n})
+	}
+	id, index, action, ok := itemPath(path)
+	if !ok {
+		return notFound()
+	}
+	if action == "cancel" {
+		if err := h.recovery.Cancel(ctx, id, index); err != nil {
+			return recoveryErr(err)
+		}
+		return jsonResp(200, map[string]any{"index": index, "status": store.Cancelled})
+	}
+	attempts, err := h.recovery.Retry(ctx, id, index)
+	if err != nil {
+		return recoveryErr(err)
+	}
+	return jsonResp(202, map[string]int{"index": index, "attempts": attempts})
+}
+
+// itemPath parses /batches/{id}/items/{index}/{retry|cancel}.
+func itemPath(path string) (id string, index int, action string, ok bool) {
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) != 5 || parts[0] != "batches" || parts[1] == "" || parts[2] != "items" {
+		return "", 0, "", false
+	}
+	if parts[4] != "retry" && parts[4] != "cancel" {
+		return "", 0, "", false
+	}
+	index, err := strconv.Atoi(parts[3])
+	if err != nil || index < 0 {
+		return "", 0, "", false
+	}
+	return parts[1], index, parts[4], true
+}
+
+func recoveryErr(err error) events.APIGatewayV2HTTPResponse {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return notFound()
+	case errors.Is(err, store.ErrInvalidTransition):
+		return jsonResp(409, map[string]string{"error": "invalid_transition"})
+	case errors.Is(err, store.ErrMaxAttempts):
+		return jsonResp(409, map[string]string{"error": "max_attempts_reached"})
+	case errors.Is(err, recovery.ErrEnqueueFailed):
+		return jsonResp(503, map[string]string{"error": "enqueue_failed"})
+	default:
+		return jsonResp(503, map[string]string{"error": "store_failed"})
+	}
 }
 
 func (h Handler) batchReport(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {

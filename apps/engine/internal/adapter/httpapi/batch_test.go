@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"reflect"
 	"strconv"
@@ -12,9 +13,11 @@ import (
 
 	"github.com/aws/aws-lambda-go/events"
 
+	"engine/internal/adapter/dlq"
 	"engine/internal/adapter/httpapi"
 	"engine/internal/adapter/sqs"
 	"engine/internal/evaluate"
+	"engine/internal/markfailed"
 	"engine/internal/processjob"
 	"engine/internal/queue"
 	"engine/internal/rules"
@@ -55,6 +58,7 @@ type harness struct {
 	t      *testing.T
 	http   httpapi.Handler
 	worker sqs.Handler
+	dlq    dlq.Handler
 	mem    *store.Memory
 	q      *queue.Memory
 	bodies []string
@@ -63,7 +67,11 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	h, mem, q := composed()
-	return &harness{t: t, http: h, worker: sqs.New(processjob.New(evaluate.New(rules.NewPolicy()), mem)), mem: mem, q: q}
+	return &harness{
+		t: t, http: h, mem: mem, q: q,
+		worker: sqs.New(processjob.New(evaluate.New(rules.NewPolicy()), mem)),
+		dlq:    dlq.New(markfailed.New(mem)),
+	}
 }
 
 func (h *harness) do(method, path, body string) events.APIGatewayV2HTTPResponse {
@@ -84,7 +92,14 @@ func (h *harness) do(method, path, body string) events.APIGatewayV2HTTPResponse 
 func (h *harness) drain() {
 	h.t.Helper()
 	err := h.q.Drain(h.t.Context(), func(ctx context.Context, body []byte) error {
-		return h.worker.Handle(ctx, events.SQSEvent{Records: []events.SQSMessage{{Body: string(body)}}})
+		resp, err := h.worker.Handle(ctx, events.SQSEvent{Records: []events.SQSMessage{{MessageId: "m", Body: string(body)}}})
+		if err != nil {
+			return err
+		}
+		if len(resp.BatchItemFailures) > 0 {
+			return fmt.Errorf("worker reported %s", body)
+		}
+		return nil
 	})
 	if err != nil {
 		h.t.Fatal(err)
@@ -92,6 +107,17 @@ func (h *harness) drain() {
 }
 
 func (h *harness) submit(body string) string {
+	h.t.Helper()
+	id, queued := h.submitAccepted(body)
+	if queued != 3 {
+		h.t.Fatalf("queued=%d", queued)
+	}
+	return id
+}
+
+// submitAccepted submits a batch that must be accepted and returns its id and
+// queued count.
+func (h *harness) submitAccepted(body string) (string, int) {
 	h.t.Helper()
 	resp := h.do("POST", "/evaluations/batch", body)
 	if resp.StatusCode != http.StatusAccepted {
@@ -104,10 +130,10 @@ func (h *harness) submit(body string) string {
 	if err := json.Unmarshal([]byte(resp.Body), &acc); err != nil {
 		h.t.Fatal(err)
 	}
-	if acc.BatchID == "" || acc.Queued != 3 {
+	if acc.BatchID == "" {
 		h.t.Fatalf("body=%s", resp.Body)
 	}
-	return acc.BatchID
+	return acc.BatchID, acc.Queued
 }
 
 func (h *harness) report(batchID string) (batchReport, string) {
