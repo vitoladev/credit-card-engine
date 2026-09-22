@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vitola-skills/task-orchestrator/envelope/v1",
+  "title": "task-orchestrator agent envelope",
+  "description": "Every dispatched agent writes exactly one of these to the path its packet names (<state_dir>/<ticket>/envelopes/<slice>-<phase>-<attempt>.json). `complete: true` is the last field written; a file without it is a truncated run and is nudged, never accepted.",
+  "type": "object",
+  "required": ["envelope_version", "ticket", "slice", "phase", "agent", "attempt", "status", "summary", "commands", "complete"],
+  "properties": {
+    "envelope_version": { "const": 1 },
+    "ticket": { "type": "string", "pattern": "^[^[:space:]/]+$" },
+    "slice": { "type": ["string", "null"], "description": "null only for stack-level phases (publish)" },
+    "phase": { "enum": ["implement", "fix", "verify", "commit", "review", "fix-check", "publish"] },
+    "agent": { "type": "string" },
+    "model": { "type": ["string", "null"] },
+    "attempt": { "type": "integer", "minimum": 1 },
+    "status": { "enum": ["done", "failed", "blocked"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "files_changed": { "type": "array", "items": { "type": "string" } },
+    "commands": { "type": "array", "items": { "type": "object", "required": ["cmd", "outcome"], "properties": { "cmd": { "type": "string" }, "outcome": { "enum": ["pass", "fail", "skipped"] }, "note": { "type": "string" } } } },
+    "criteria": { "type": "array", "items": { "type": "object", "required": ["criterion", "verdict", "evidence", "level"], "properties": { "criterion": { "type": "string" }, "verdict": { "enum": ["passed", "failed", "blocked"] }, "evidence": { "type": "string" }, "level": { "enum": ["test", "spec", "live-once", "controlled-response"] }, "invalidated_by": { "type": "array", "items": { "type": "string" } } } } },
+    "findings": { "type": "array", "items": { "type": "object", "required": ["severity", "text"], "properties": { "severity": { "enum": ["P0", "P1", "P2", "P3"] }, "text": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } } } } },
+    "commits": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" } },
+    "verdict": { "enum": ["pass", "fail", "resolved", "not-resolved", "introduced-new"], "description": "review: pass|fail; fix-check: resolved|not-resolved|introduced-new" },
+    "unsatisfied": { "type": "array", "items": { "type": "object", "required": ["requirement", "reason"], "properties": { "requirement": { "type": "string" }, "reason": { "type": "string" } } } },
+    "deviations": { "type": "array", "items": { "type": "string" } },
+    "promoted_specs": { "type": "array", "items": { "type": "string" } },
+    "docs_touched": { "type": "array", "items": { "type": "string" } },
+    "blocked_reason": { "type": ["string", "null"] },
+    "complete": { "const": true }
+  },
+  "x-required-by-phase": {
+    "implement": ["files_changed", "unsatisfied", "deviations"],
+    "fix": ["files_changed", "unsatisfied", "deviations"],
+    "verify": ["criteria", "findings"],
+    "commit": ["commits"],
+    "review": ["verdict", "findings"],
+    "fix-check": ["verdict", "findings"],
+    "publish": []
+  }
+}

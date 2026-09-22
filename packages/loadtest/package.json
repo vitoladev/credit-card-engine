@@ -1,0 +1,7 @@
+{
+  "name": "loadtest",
+  "private": true,
+  "scripts": {
+    "loadtest": "k6 run evaluations.js"
+  }
+}

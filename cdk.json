@@ -1,0 +1,16 @@
+{
+  "app": "go run ./packages/infra-iac",
+  "watch": {
+    "include": ["**"],
+    "exclude": [
+      "README.md",
+      "cdk*.json",
+      "go.mod",
+      "go.sum",
+      "**/*test.go"
+    ]
+  },
+  "context": {
+    "@aws-cdk/aws-lambda:recognizeLayerVersion": true
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "$comment": "Routing and bindings for the task-orchestrator. The orchestrator reads this at dispatch time and passes `model` explicitly; agent frontmatter is only the fallback. A consuming repo overrides any key by writing .agents/orchestrator.json at its root; scripts/bindings.sh prints the merged result (repo values win, objects merge, arrays and scalars replace). Tiers keep the table readable: flip one phase between tiers here, never in an agent file.",
+  "tiers": {
+    "claude-code": { "cheap": "haiku", "mid": "sonnet", "expensive": "opus" },
+    "cursor": { "cheap": "composer-2.5[fast=false]", "mid": "composer-2.5[fast=false]", "expensive": "inherit" }
+  },
+  "phases": {
+    "scope":     { "runs_in": "orchestrator", "tier": null,        "why": "reads the tracker, plans the stack; small and needs the parent's judgment" },
+    "implement": { "agent": { "backend": "backend-executor", "contract": "backend-executor", "infra": "backend-executor", "frontend": "frontend-executor" }, "tier": "expensive", "why": "the only phase that writes product code" },
+    "fix":       { "agent": { "backend": "backend-executor", "contract": "backend-executor", "infra": "backend-executor", "frontend": "frontend-executor" }, "tier": "expensive", "why": "same as implement, narrowed to one finding" },
+    "verify":    { "agent": { "backend": "backend-verifier", "contract": "backend-verifier", "infra": "backend-verifier", "frontend": "frontend-verifier" }, "tier": "mid", "why": "drives curl/Playwright and writes specs; the cheap tier drops flows mid-run" },
+    "commit":    { "agent": "committer", "tier": "cheap", "why": "mechanical: stage, message, commit" },
+    "fix-check": { "agent": "fix-checker", "tier": "cheap", "why": "one diff against one finding" },
+    "review":    { "agent": "code-reviewer", "tier": "expensive", "why": "the final gate; Standards + Spec axes in one context" },
+    "publish":   { "runs_in": "orchestrator", "skills": { "unslop": "cheap", "maintain-pr-description": "mid", "pr-preview-media": "mid", "monitor-ci-and-reviews": "mid" }, "tier": null, "why": "gh stack submit is a host command; the prose work forks to the skill's pinned model (.claude/skill-models.json)" }
+  },
+  "environments": {
+    "$comment": "Per phase: run | defer | no. `defer` records the phase as skipped with note `deferred:<env>`; resume.sh re-opens it in an environment that can run it. Detection: ORCH_ENV, else /sandbox => sandbox, else no docker => cloud, else local.",
+    "local":   { "sync": false, "phases": { "scope": "run", "implement": "run", "fix": "run", "verify": "run", "commit": "run", "fix-check": "run", "review": "run", "publish": "run" } },
+    "cloud":   { "sync": true,  "phases": { "scope": "run", "implement": "run", "fix": "run", "verify": "defer", "commit": "run", "fix-check": "run", "review": "run", "publish": "run" },
+                 "why": "no local runtime or browser: verify needs the dev stack, so it is deferred; state is mirrored to refs/orchestrator/state because the clone dies with the session" },
+    "sandbox": { "sync": true,  "phases": { "scope": "run", "implement": "run", "fix": "run", "verify": "defer", "commit": "no", "fix-check": "no", "review": "run", "publish": "no" },
+                 "why": "the worktree is a copy and git runs on the host, so nothing past review can happen here; download the copy and resume locally" }
+  },
+  "gate": {
+    "$comment": "How many fix rounds a slice may spend before it is blocked and the run stops. A round is one fix dispatch + commit + fix-check. The cap counts rounds, not findings: one round may fix several. Override in the repo overlay.",
+    "max_fix_rounds": 3
+  },
+  "envelope": {
+    "max_nudges": 2,
+    "nudge": "Your envelope at {path} is {problem}. Write the complete envelope now as JSON to that exact path — every required field for phase {phase}, ending with \"complete\": true — then stop. Do not redo or extend the work; report only what you already did."
+  },
+  "bindings": {
+    "$comment": "What the repo must tell the orchestrator. `required` lists the keys that must be non-null after the overlay; a missing one is stop-and-report, never a guess. `review_bot` is null (CI is the only gate) or an object {trigger, author, check, verdict, skip_on}: `trigger` is the command that asks the bot to review, posted once per layer whose class is not in `skip_on` (null = the bot reviews on its own); `author` is the GitHub login its reviews and threads carry; `check` is a status check that says the reviewer ran (optional); `verdict` is a check that must pass on HEAD (null = the latest review by `author` is on HEAD with no unresolved thread it opened). Whatever bot the repo uses, it is described here and never named in a skill. A label set to null in the overlay is dropped: that concern is not scoped in the repo.",
+    "required": ["tracker.kind", "tracker.id_pattern", "standards_doc", "command.wrapper"],
+    "tracker":       { "kind": null, "team": null, "id_pattern": null, "docs": null },
+    "standards_doc": null,
+    "state_dir":     "docs/ai/executions",
+    "command":       { "wrapper": null, "host_only": ["git", "gh"] },
+    "labels":        { "backend": "backend", "frontend": "frontend", "contract": "contract", "infra": "infra" },
+    "review_bot":    null,
+    "optional":      { "promote-e2e": true, "pr-preview-media": true, "pr_template": ".github/pull_request_template.md" }
+  }
+}

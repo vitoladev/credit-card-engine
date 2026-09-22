@@ -1,0 +1,45 @@
+{
+  "name": "credit-card-engine",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "dev",
+  "workspaceFolder": "/workspaces/credit-card-engine",
+  "shutdownAction": "stopCompose",
+  "features": {
+    "ghcr.io/devcontainers/features/go:1": {
+      "version": "1.27"
+    },
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "22"
+    },
+    "ghcr.io/devcontainers/features/aws-cli:1": {},
+    "ghcr.io/grafana/devcontainer-features/k6:1": {},
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {
+      "moby": true,
+      "installDockerBuildx": true
+    }
+  },
+  "forwardPorts": [4566],
+  "portsAttributes": {
+    "4566": {
+      "label": "Floci",
+      "onAutoForward": "silent"
+    }
+  },
+  "remoteEnv": {
+    "AWS_ENDPOINT_URL": "http://floci:4566",
+    "AWS_ENDPOINT_URL_S3": "http://floci:4566",
+    "AWS_DEFAULT_REGION": "us-east-1",
+    "AWS_ACCESS_KEY_ID": "test",
+    "AWS_SECRET_ACCESS_KEY": "test",
+    "AWS_EC2_METADATA_DISABLED": "true",
+    "AWS_S3_FORCE_PATH_STYLE": "true"
+  },
+  "postCreateCommand": "npm install && npm install -g aws-cdk@2.1142.0 aws-cdk-local@3.0.4 && go work sync",
+  "postStartCommand": "bash .devcontainer/wait-floci.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["golang.go"]
+    }
+  },
+  "remoteUser": "vscode"
+}

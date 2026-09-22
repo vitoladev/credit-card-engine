@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "vitola-skills/task-orchestrator/checkpoint/v1",
+  "title": "task-orchestrator checkpoint",
+  "description": "One file per parent ticket at <state_dir>/<ticket>.json. Written atomically (tmp + rename) on every phase transition; the source of truth a `resume <ticket>` reads.",
+  "type": "object",
+  "required": ["schema_version", "ticket", "harness", "environment", "run_id", "started_at", "updated_at", "worktree", "trunk", "trunk_sha", "phase", "current_slice", "slices", "last_envelope", "stopped"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "ticket": { "type": "string", "pattern": "^[^[:space:]/]+$" },
+    "title": { "type": "string" },
+    "harness": { "enum": ["claude-code", "cursor"] },
+    "environment": { "enum": ["local", "cloud", "sandbox"], "description": "where the last write happened; resume.sh sets it to the current one" },
+    "run_id": { "type": "string", "description": "<started_at>-<6 hex>; a resume keeps the run_id and bumps resumes" },
+    "resumes": { "type": "integer", "minimum": 0 },
+    "started_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "worktree": { "type": "string", "description": "absolute path of the worktree the run executes in" },
+    "trunk": { "type": "string" },
+    "trunk_sha": { "type": "string", "description": "trunk SHA the stack was rooted on at scope time" },
+    "phase": { "enum": ["scope", "implement", "verify", "commit", "review", "publish", "done", "stopped"], "description": "run-level phase: scope until the issue set is resolved and the stack initialised; then mirrors current_slice's active phase; publish once every slice is gated" },
+    "current_slice": { "type": ["string", "null"] },
+    "slices": { "type": "array", "items": { "$ref": "#/$defs/slice" } },
+    "last_envelope": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/envelope_ref" }] },
+    "stopped": { "oneOf": [{ "type": "null" }, { "type": "object", "required": ["at", "reason"], "properties": { "at": { "type": "string" }, "reason": { "type": "string" }, "resume_hint": { "type": "string" } } }] },
+    "reconcile": { "type": "object", "description": "written by resume.sh: when it last ran and what it changed", "properties": { "at": { "type": "string" }, "notes": { "type": "array", "items": { "type": "string" } } } }
+  },
+  "$defs": {
+    "phase_status": { "enum": ["pending", "running", "done", "failed", "partial", "skipped"] },
+    "phase_record": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": { "$ref": "#/$defs/phase_status" },
+        "agent": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "attempt": { "type": "integer", "minimum": 0 },
+        "started_at": { "type": ["string", "null"] },
+        "finished_at": { "type": ["string", "null"] },
+        "head_sha": { "type": ["string", "null"], "description": "branch HEAD the phase was completed against; a later HEAD invalidates verify/review" },
+        "envelope": { "type": ["string", "null"], "description": "path of the validated envelope file" },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+    "slice": {
+      "type": "object",
+      "required": ["id", "label", "order", "branch", "base_branch", "status", "next", "phases", "fix_rounds", "commits", "proven", "findings", "deviations"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[^[:space:]/]+$" },
+        "title": { "type": "string" },
+        "label": { "enum": ["backend", "frontend", "contract", "infra"] },
+        "order": { "type": "integer", "minimum": 0 },
+        "branch": { "type": "string" },
+        "base_branch": { "type": "string" },
+        "base_sha": { "type": ["string", "null"] },
+        "head_sha": { "type": ["string", "null"], "description": "last HEAD the orchestrator observed on branch" },
+        "worktree": { "type": ["string", "null"], "description": "worktree where branch is checked out, as last observed" },
+        "verify_route": { "enum": ["verify-backend-output", "verify-frontend-output", "contract-regen-nodiff", "infra-synth"] },
+        "status": { "enum": ["pending", "implementing", "implemented", "verifying", "verified", "committing", "committed", "reviewing", "gated", "published", "blocked"] },
+        "next": { "enum": ["implement", "verify", "fix", "commit", "fix-check", "review", "publish", null], "description": "the phase a resume dispatches next; set by checkpoint.sh on every transition, re-derived by resume.sh when git disagrees" },
+        "phases": {
+          "type": "object",
+          "required": ["implement", "verify", "commit", "review", "publish"],
+          "properties": {
+            "implement": { "$ref": "#/$defs/phase_record" },
+            "verify": { "$ref": "#/$defs/phase_record" },
+            "commit": { "$ref": "#/$defs/phase_record" },
+            "review": { "$ref": "#/$defs/phase_record" },
+            "publish": { "$ref": "#/$defs/phase_record" },
+            "fix": { "$ref": "#/$defs/phase_record" },
+            "fix-check": { "$ref": "#/$defs/phase_record" }
+          }
+        },
+        "fix_rounds": { "type": "integer", "minimum": 0 },
+        "commits": { "type": "array", "items": { "type": "string" } },
+        "pr": { "type": ["object", "null"], "properties": { "number": { "type": "integer" }, "url": { "type": "string" } } },
+        "proven": { "type": "array", "items": { "type": "object", "required": ["criterion", "evidence", "level"], "properties": { "criterion": { "type": "string" }, "evidence": { "type": "string" }, "level": { "enum": ["test", "spec", "live-once"] }, "invalidated_by": { "type": "array", "items": { "type": "string" } } } } },
+        "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" }, "description": "standing P0/P1 not yet resolved; P2/P3 advisories carry through to the report" },
+        "deviations": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["severity", "text"],
+      "properties": { "severity": { "enum": ["P0", "P1", "P2", "P3"] }, "text": { "type": "string" }, "paths": { "type": "array", "items": { "type": "string" } }, "source": { "enum": ["verify", "review", "fix-check"] }, "resolved": { "type": "boolean" } }
+    },
+    "envelope_ref": {
+      "type": "object",
+      "required": ["path", "slice", "phase", "status", "at"],
+      "properties": { "path": { "type": "string" }, "slice": { "type": ["string", "null"] }, "phase": { "type": "string" }, "status": { "type": "string" }, "at": { "type": "string" } }
+    }
+  }
+}

@@ -1,0 +1,1 @@
+../../.agents/agents/fix-checker.md

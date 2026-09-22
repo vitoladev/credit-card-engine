@@ -1,0 +1,18 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "futureFlags": {
+    "experimentalGoWorkspaces": true
+  },
+  "tasks": {
+    "build": {},
+    "test": {},
+    "lint": {},
+    "format": {
+      "cache": false
+    },
+    "loadtest": {
+      "cache": false,
+      "passThroughEnv": ["BASE_URL"]
+    }
+  }
+}

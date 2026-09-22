@@ -1,0 +1,9 @@
+/bin
+/cdk.out
+REQUIREMENTS.md
+/.cdk.staging
+/coverage.out
+.DS_Store
+*.exe
+node_modules
+.turbo

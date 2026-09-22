@@ -1,0 +1,36 @@
+services:
+  dev:
+    image: mcr.microsoft.com/devcontainers/base:bookworm
+    command: sleep infinity
+    volumes:
+      - ..:/workspaces/credit-card-engine:cached
+    working_dir: /workspaces/credit-card-engine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      AWS_ENDPOINT_URL: http://floci:4566
+      AWS_ENDPOINT_URL_S3: http://floci:4566
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_S3_FORCE_PATH_STYLE: "true"
+    depends_on:
+      - floci
+
+  floci:
+    image: floci/floci:2.1.0
+    ports:
+      - "4566:4566"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - floci-data:/app/data
+    environment:
+      FLOCI_STORAGE_MODE: persistent
+      FLOCI_DEFAULT_REGION: us-east-1
+      FLOCI_DEFAULT_ACCOUNT_ID: "000000000000"
+      FLOCI_HOSTNAME: floci
+      FLOCI_BASE_URL: http://floci:4566
+
+volumes:
+  floci-data:

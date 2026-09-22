@@ -1,0 +1,9 @@
+{
+  "name": "credit-card-engine",
+  "private": true,
+  "packageManager": "npm@10.9.2",
+  "workspaces": ["packages/loadtest"],
+  "devDependencies": {
+    "turbo": "^2.11.0"
+  }
+}

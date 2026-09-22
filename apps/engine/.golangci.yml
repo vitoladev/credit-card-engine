@@ -1,0 +1,107 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - depguard
+    - durationcheck
+    - errname
+    - errorlint
+    - gocognit
+    - gocritic
+    - makezero
+    - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - perfsprint
+    - predeclared
+    - reassign
+    - revive
+    - unconvert
+    - usestdlibvars
+    - wastedassign
+  settings:
+    errcheck:
+      check-type-assertions: true
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (*encoding/json.Encoder).Encode
+    gocognit:
+      min-complexity: 15
+    depguard:
+      rules:
+        domain-stays-pure:
+          files:
+            - "**/internal/domain/**"
+          deny:
+            - pkg: github.com/aws
+              desc: domain must not import AWS
+            - pkg: engine/internal
+              desc: domain imports no other internal package
+        rules-stay-pure:
+          files:
+            - "**/internal/rules/**"
+          deny:
+            - pkg: github.com/aws
+              desc: rules must not import AWS
+            - pkg: engine/internal/evaluate
+              desc: rules must not import a use case
+            - pkg: engine/internal/adapter
+              desc: rules must not import an adapter
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+    revive:
+      rules:
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: early-return
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: identical-branches
+        - name: increment-decrement
+        - name: indent-error-flow
+        - name: range-val-address
+        - name: receiver-naming
+        - name: redefines-builtin-id
+        - name: superfluous-else
+        - name: time-equal
+        - name: unnecessary-stmt
+        - name: unreachable-code
+        - name: use-any
+        - name: useless-break
+        - name: var-declaration
+        - name: waitgroup-by-value
+  exclusions:
+    generated: lax
+    rules:
+      - path: _test\.go
+        linters:
+          - noctx
+          - gocognit
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - engine

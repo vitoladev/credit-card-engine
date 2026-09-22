@@ -1,0 +1,10 @@
+{
+  "$comment": "Per-harness frontmatter for the canonical roster in .agents/agents/. scripts/agents/sync-agents.sh renders .claude/agents/ and .cursor/agents/ from it; a harness with no entry for an agent does not get that file. `model` here is the fallback — the orchestrator passes routing.json's model on dispatch. Tracker MCP tools (mcp__linear__*, say) are added by the consuming repo's overlay of this file when it uses one; the plugin's defaults grant none.",
+  "backend-executor":  { "claude-code": { "tools": "Bash, Read, Edit, Write, Glob, Grep, ToolSearch, Skill", "model": "sonnet" }, "cursor": {} },
+  "frontend-executor": { "claude-code": { "tools": "Bash, Read, Edit, Write, Glob, Grep, ToolSearch, Skill", "model": "sonnet" }, "cursor": {} },
+  "backend-verifier":  { "claude-code": { "tools": "Bash, Read, Glob, Grep, Write, Edit, ToolSearch, Skill", "model": "sonnet" }, "cursor": { "model": "composer-2.5[fast=false]" } },
+  "frontend-verifier": { "claude-code": { "tools": "Bash, Read, Glob, Grep, Write, Edit, ToolSearch, Skill", "model": "sonnet" }, "cursor": { "model": "composer-2.5[fast=false]" } },
+  "committer":         { "claude-code": { "tools": "Bash, Read, Grep, Glob", "model": "haiku" }, "cursor": { "model": "composer-2.5[fast=false]" } },
+  "fix-checker":       { "claude-code": { "tools": "Bash, Read, Grep, Glob, Write", "model": "haiku" }, "cursor": { "model": "composer-2.5[fast=false]" } },
+  "code-reviewer":     { "claude-code": { "tools": "Bash, Read, Grep, Glob, Write, ToolSearch", "model": "opus" } }
+}
