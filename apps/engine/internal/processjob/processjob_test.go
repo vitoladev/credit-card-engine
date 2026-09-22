@@ -1,7 +1,6 @@
 package processjob_test
 
 import (
-	"encoding/json"
 	"testing"
 
 	"engine/internal/domain"
@@ -24,12 +23,9 @@ func TestExecuteDecidesTheItemOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	uc := processjob.New(evaluate.New(rules.NewPolicy()), mem)
-	body, err := json.Marshal(queue.Job{BatchID: "b1", Index: 0, Attempt: 1, Customer: ana})
-	if err != nil {
-		t.Fatal(err)
-	}
+	job := queue.Job{BatchID: "b1", Index: 0, Attempt: 1, Customer: ana}
 	for range 2 {
-		if _, err := uc.Execute(t.Context(), body); err != nil {
+		if _, err := uc.Execute(t.Context(), job); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -47,18 +43,15 @@ func TestExecuteDecidesTheItemOnce(t *testing.T) {
 
 func TestExecuteFailsForAnUnknownItem(t *testing.T) {
 	uc := processjob.New(evaluate.New(rules.NewPolicy()), store.NewMemory())
-	body, err := json.Marshal(queue.Job{BatchID: "missing", Index: 0, Attempt: 1, Customer: ana})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := uc.Execute(t.Context(), body); err == nil {
+	job := queue.Job{BatchID: "missing", Index: 0, Attempt: 1, Customer: ana}
+	if _, err := uc.Execute(t.Context(), job); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-func TestExecuteRejectsInvalidJSON(t *testing.T) {
+func TestExecuteRejectsAMissingBatchID(t *testing.T) {
 	uc := processjob.New(evaluate.New(rules.NewPolicy()), store.NewMemory())
-	if _, err := uc.Execute(t.Context(), []byte("{")); err == nil {
+	if _, err := uc.Execute(t.Context(), queue.Job{Customer: ana}); err == nil {
 		t.Fatal("expected error")
 	}
 }

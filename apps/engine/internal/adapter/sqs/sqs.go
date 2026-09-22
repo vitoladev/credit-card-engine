@@ -2,6 +2,8 @@ package sqs
 
 import (
 	"context"
+	"encoding/json"
+	"log/slog"
 	"time"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -9,6 +11,7 @@ import (
 	"engine/internal/adapter/telemetry"
 	"engine/internal/evaluate"
 	"engine/internal/processjob"
+	"engine/internal/queue"
 	"engine/internal/rules"
 	"engine/internal/store"
 )
@@ -31,9 +34,16 @@ func Default() Handler {
 func (h Handler) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEventResponse, error) {
 	var resp events.SQSEventResponse
 	for _, rec := range ev.Records {
-		start := time.Now()
-		out, err := h.jobs.Execute(ctx, []byte(rec.Body))
+		job, err := parseJob(rec.Body)
 		if err != nil {
+			failRecord(rec, err, job)
+			resp.BatchItemFailures = append(resp.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: rec.MessageId})
+			continue
+		}
+		start := time.Now()
+		out, err := h.jobs.Execute(ctx, job)
+		if err != nil {
+			failRecord(rec, err, job)
 			resp.BatchItemFailures = append(resp.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: rec.MessageId})
 			continue
 		}
@@ -42,4 +52,20 @@ func (h Handler) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEven
 		}
 	}
 	return resp, nil
+}
+
+func parseJob(body string) (queue.Job, error) {
+	var job queue.Job
+	if err := json.Unmarshal([]byte(body), &job); err != nil {
+		return queue.Job{}, err
+	}
+	return job, nil
+}
+
+func failRecord(rec events.SQSMessage, err error, job queue.Job) {
+	attrs := []any{slog.String("message_id", rec.MessageId), slog.String("error", err.Error())}
+	if job.BatchID != "" {
+		attrs = append(attrs, slog.String("batch_id", job.BatchID), slog.Int("index", job.Index))
+	}
+	slog.Error("record_failed", attrs...)
 }

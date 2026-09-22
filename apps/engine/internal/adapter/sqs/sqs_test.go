@@ -1,7 +1,9 @@
 package sqs_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -86,5 +88,41 @@ func TestHandleReportsOnlyTheFailedRecords(t *testing.T) {
 	}
 	if b.Counters != (store.Counters{Queued: 1, Decided: 1}) {
 		t.Fatalf("%+v", b.Counters)
+	}
+}
+
+func TestHandleLogsFailedRecordsWithoutCustomerData(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	c := domain.Customer{Name: "Ana", CPF: "39053344705", CreditScore: 780, CreditLimitCents: 500_000, MonthlySpendCents: []int64{80_000}}
+	mem := store.NewMemory()
+	if err := mem.Create(t.Context(), "b1", []domain.Customer{c}); err != nil {
+		t.Fatal(err)
+	}
+	h := sqs.New(processjob.New(evaluate.New(rules.NewPolicy()), mem))
+	body, err := json.Marshal(queue.Job{BatchID: "b1", Index: 0, Attempt: 1, Customer: c})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem.FailNextWrites(1)
+	resp, err := h.Handle(t.Context(), events.SQSEvent{Records: []events.SQSMessage{
+		{MessageId: "m1", Body: string(body)},
+		{MessageId: "m2", Body: "not json"},
+	}})
+	if err != nil || len(resp.BatchItemFailures) != 2 {
+		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, `"msg":"record_failed"`) || !strings.Contains(logs, `"message_id":"m1"`) {
+		t.Fatalf("missing record_failed:\n%s", logs)
+	}
+	if !strings.Contains(logs, `"batch_id":"b1"`) || !strings.Contains(logs, `"index":0`) {
+		t.Fatalf("missing ids:\n%s", logs)
+	}
+	if strings.Contains(logs, "Ana") || strings.Contains(logs, "39053344705") || strings.Contains(logs, "not json") {
+		t.Fatalf("leaked customer data or body:\n%s", logs)
 	}
 }

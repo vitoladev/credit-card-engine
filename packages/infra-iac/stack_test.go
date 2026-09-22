@@ -239,12 +239,12 @@ func TestStackHasIAMAuthorizerDashboardAndAlarms(t *testing.T) {
 		},
 	})
 	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
-		"Threshold":            dlqVisibleAlarmThreshold,
-		"EvaluationPeriods":    dlqVisibleEvaluationPeriods,
-		"ComparisonOperator":   "GreaterThanThreshold",
-		"TreatMissingData":     "notBreaching",
-		"Namespace":            "AWS/SQS",
-		"MetricName":           "ApproximateNumberOfMessagesVisible",
+		"Threshold":          dlqVisibleAlarmThreshold,
+		"EvaluationPeriods":  dlqVisibleEvaluationPeriods,
+		"ComparisonOperator": "GreaterThanThreshold",
+		"TreatMissingData":   "notBreaching",
+		"Namespace":          "AWS/SQS",
+		"MetricName":         "ApproximateNumberOfMessagesVisible",
 	})
 	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
 		"Threshold":         latencyAlarmMs,
@@ -347,4 +347,50 @@ func TestBatchSizeOutOfRangeFailsSynth(t *testing.T) {
 			t.Fatalf("BATCH_SIZE=%q gave %s, want an error", env, got)
 		}
 	}
+}
+
+func TestFlociCapsLambdaConcurrency(t *testing.T) {
+	t.Cleanup(jsii.Close)
+	t.Setenv("AWS_ENDPOINT_URL", "http://localhost:4566")
+	got := reservedConcurrency(t)
+	want := map[string]any{
+		functionID:       float64(flociEvaluateConcurrency),
+		workerFunctionID: float64(flociWorkerConcurrency),
+		dlqFunctionID:    float64(flociDlqConcurrency),
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestRealAWSLeavesLambdaConcurrencyUnreserved(t *testing.T) {
+	t.Cleanup(jsii.Close)
+	t.Setenv("AWS_ENDPOINT_URL", "")
+	for name, n := range reservedConcurrency(t) {
+		if n != nil {
+			t.Fatalf("%s reserved=%v", name, n)
+		}
+	}
+}
+
+func reservedConcurrency(t *testing.T) map[string]any {
+	t.Helper()
+	app := awscdk.NewApp(nil)
+	template := assertions.Template_FromStack(NewStack(app, "Test", nil), nil)
+	got := map[string]any{}
+	for _, fn := range *template.FindResources(jsii.String("AWS::Lambda::Function"), nil) {
+		props := (*fn)["Properties"].(map[string]any)
+		log := props["LoggingConfig"].(map[string]any)["LogGroup"].(map[string]any)["Ref"].(string)
+		name := log
+		switch {
+		case strings.Contains(log, "EvaluateLogs"):
+			name = functionID
+		case strings.Contains(log, "WorkerLogs"):
+			name = workerFunctionID
+		case strings.Contains(log, "DlqConsumerLogs"):
+			name = dlqFunctionID
+		}
+		got[name] = props["ReservedConcurrentExecutions"]
+	}
+	return got
 }

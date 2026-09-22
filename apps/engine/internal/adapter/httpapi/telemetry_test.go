@@ -295,3 +295,41 @@ func TestAlreadyFailedItemWritesNoItemsFailedLine(t *testing.T) {
 		t.Fatalf("second Fail wrote EMF: %v", lines)
 	}
 }
+
+func TestWorkerLogsRecordFailureWithoutCustomerData(t *testing.T) {
+	buf := captureLogs(t)
+	h := observedHarness(t)
+	id := h.submit(threeCustomers)
+	jobs := h.takeJobs()
+	h.mem.FailNextWrites(1)
+	if !h.deliver(jobs[0]) {
+		t.Fatal("worker acknowledged a record it could not decide")
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, `"msg":"record_failed"`) || !strings.Contains(logs, `"message_id":"m1"`) {
+		t.Fatalf("missing record_failed:\n%s", logs)
+	}
+	if !strings.Contains(logs, `"batch_id":"`+id+`"`) || !strings.Contains(logs, `"index":0`) {
+		t.Fatalf("missing ids:\n%s", logs)
+	}
+	assertNoCustomerData(t, logs)
+}
+
+func TestDLQLogsRecordFailureWithoutCustomerData(t *testing.T) {
+	buf := captureLogs(t)
+	h := observedHarness(t)
+	id := h.submit(threeCustomers)
+	jobs := h.takeJobs()
+	h.mem.FailNextWrites(1)
+	if !h.deadLetter(jobs[0]) {
+		t.Fatal("DLQ consumer acknowledged a record it could not mark failed")
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, `"msg":"record_failed"`) || !strings.Contains(logs, `"message_id":"m1"`) {
+		t.Fatalf("missing record_failed:\n%s", logs)
+	}
+	if !strings.Contains(logs, `"batch_id":"`+id+`"`) || !strings.Contains(logs, `"index":0`) {
+		t.Fatalf("missing ids:\n%s", logs)
+	}
+	assertNoCustomerData(t, logs)
+}

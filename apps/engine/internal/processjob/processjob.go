@@ -2,7 +2,6 @@ package processjob
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	"engine/internal/domain"
@@ -29,11 +28,7 @@ type Outcome struct {
 	Index    int
 }
 
-func (u UseCase) Execute(ctx context.Context, body []byte) (Outcome, error) {
-	var job queue.Job
-	if err := json.Unmarshal(body, &job); err != nil {
-		return Outcome{}, err
-	}
+func (u UseCase) Execute(ctx context.Context, job queue.Job) (Outcome, error) {
 	if job.BatchID == "" {
 		return Outcome{}, errors.New("missing batch_id")
 	}

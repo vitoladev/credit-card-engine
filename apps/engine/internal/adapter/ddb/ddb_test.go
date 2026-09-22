@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -14,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/smithy-go/middleware"
 
 	"engine/internal/adapter/ddb"
 	"engine/internal/domain"
@@ -23,6 +25,40 @@ import (
 // These tests need a DynamoDB endpoint (Floci), e.g.
 // AWS_TEST_ENDPOINT=http://localhost:4566 go test ./internal/adapter/ddb/
 func newStore(t *testing.T) *ddb.Store {
+	return newStoreWith(t, nil)
+}
+
+func newStoreFailingPutsAfter(t *testing.T, succeed int32) *ddb.Store {
+	t.Helper()
+	var n atomic.Int32
+	return newStoreWith(t, func(cfg *aws.Config) {
+		cfg.APIOptions = append(cfg.APIOptions, func(stack *middleware.Stack) error {
+			return stack.Initialize.Add(middleware.InitializeMiddlewareFunc("failPuts", func(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (middleware.InitializeOutput, middleware.Metadata, error) {
+				input, ok := in.Parameters.(*dynamodb.BatchWriteItemInput)
+				if !ok {
+					return next.HandleInitialize(ctx, in)
+				}
+				puts := 0
+				for _, reqs := range input.RequestItems {
+					for _, r := range reqs {
+						if r.PutRequest != nil {
+							puts++
+						}
+					}
+				}
+				if puts == 0 {
+					return next.HandleInitialize(ctx, in)
+				}
+				if n.Add(1) > succeed {
+					return middleware.InitializeOutput{}, middleware.Metadata{}, errors.New("injected put failure")
+				}
+				return next.HandleInitialize(ctx, in)
+			}), middleware.After)
+		})
+	})
+}
+
+func newStoreWith(t *testing.T, opt func(*aws.Config)) *ddb.Store {
 	t.Helper()
 	endpoint := os.Getenv("AWS_TEST_ENDPOINT")
 	if endpoint == "" {
@@ -35,6 +71,9 @@ func newStore(t *testing.T) *ddb.Store {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if opt != nil {
+		opt(&cfg)
 	}
 	client := dynamodb.NewFromConfig(cfg)
 	table := "ddb-test-" + randomID()
@@ -203,4 +242,87 @@ func TestFailRetryCancelTransitions(t *testing.T) {
 	wantErr("cancel missing", st.Cancel(ctx, "b1", 9), store.ErrNotFound)
 	wantErr("retry cancelled", st.Retry(ctx, "b1", 1, 1), store.ErrInvalidTransition)
 	wantCounters(store.Counters{Queued: 1, Failed: 1, Cancelled: 1})
+}
+
+func TestRetryManyMovesFailedItems(t *testing.T) {
+	st := newStore(t)
+	ctx := t.Context()
+	customers := []domain.Customer{{Name: "Ana", CPF: "39053344705"}, {Name: "Bruno", CPF: "12345678909"}, {Name: "Carla", CPF: "98765432100"}}
+	if err := st.Create(ctx, "b1", customers); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Fail(ctx, "b1", 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Fail(ctx, "b1", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	failed, err := st.Failed(ctx, "b1")
+	if err != nil || len(failed) != 2 {
+		t.Fatalf("failed=%+v err=%v", failed, err)
+	}
+	queued, err := st.RetryMany(ctx, "b1", append(failed, store.Item{Index: 2, Attempts: 1}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 2 || queued[0].Index != 0 || queued[1].Index != 1 {
+		t.Fatalf("queued=%+v", queued)
+	}
+	b, err := st.Report(ctx, "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Counters != (store.Counters{Queued: 3}) {
+		t.Fatalf("counters=%+v", b.Counters)
+	}
+	if b.Items[0].Attempts != 2 || b.Items[1].Attempts != 2 || b.Items[2].Attempts != 1 {
+		t.Fatalf("attempts=%d,%d,%d", b.Items[0].Attempts, b.Items[1].Attempts, b.Items[2].Attempts)
+	}
+}
+
+func TestRetryManyMovesAFullChunk(t *testing.T) {
+	st := newStore(t)
+	ctx := t.Context()
+	n := 51
+	customers := make([]domain.Customer, n)
+	for i := range customers {
+		customers[i] = domain.Customer{Name: "Ana", CPF: "39053344705"}
+	}
+	if err := st.Create(ctx, "b1", customers); err != nil {
+		t.Fatal(err)
+	}
+	for i := range n {
+		if err := st.Fail(ctx, "b1", i, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failed, err := st.Failed(ctx, "b1")
+	if err != nil || len(failed) != n {
+		t.Fatalf("failed=%d err=%v", len(failed), err)
+	}
+	queued, err := st.RetryMany(ctx, "b1", failed)
+	if err != nil || len(queued) != n {
+		t.Fatalf("queued=%d err=%v", len(queued), err)
+	}
+	b, err := st.Report(ctx, "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Counters != (store.Counters{Queued: n}) {
+		t.Fatalf("counters=%+v", b.Counters)
+	}
+}
+
+func TestCreateRemovesPartialRowsOnWriteFailure(t *testing.T) {
+	st := newStoreFailingPutsAfter(t, 1)
+	customers := make([]domain.Customer, 30)
+	for i := range customers {
+		customers[i] = domain.Customer{Name: "Ana", CPF: "39053344705"}
+	}
+	if err := st.Create(t.Context(), "b1", customers); err == nil {
+		t.Fatal("expected write failure")
+	}
+	if _, err := st.Report(t.Context(), "b1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("leftover batch: err=%v", err)
+	}
 }

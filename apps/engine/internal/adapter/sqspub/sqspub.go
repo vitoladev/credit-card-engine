@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strconv"
 	"sync"
@@ -61,6 +62,7 @@ func (p *Publisher) Publish(ctx context.Context, jobs []queue.Job) ([]int, error
 }
 
 func (p *Publisher) send(ctx context.Context, chunk []queue.Job) ([]int, error) {
+	trace := traceHeader()
 	entries := make([]types.SendMessageBatchRequestEntry, 0, len(chunk))
 	for _, job := range chunk {
 		body, err := json.Marshal(job)
@@ -68,8 +70,9 @@ func (p *Publisher) send(ctx context.Context, chunk []queue.Job) ([]int, error) 
 			return indexes(chunk), err
 		}
 		entries = append(entries, types.SendMessageBatchRequestEntry{
-			Id:          aws.String(strconv.Itoa(job.Index)),
-			MessageBody: aws.String(string(body)),
+			Id:                      aws.String(strconv.Itoa(job.Index)),
+			MessageBody:             aws.String(string(body)),
+			MessageSystemAttributes: trace,
 		})
 	}
 	out, err := p.client.SendMessageBatch(ctx, &sqs.SendMessageBatchInput{
@@ -99,4 +102,19 @@ func indexes(jobs []queue.Job) []int {
 		out[i] = j.Index
 	}
 	return out
+}
+
+// Lambda Active tracing puts the current segment in _X_AMZN_TRACE_ID. SQS
+// delivers it as AWSTraceHeader so the worker continues this invocation's trace.
+func traceHeader() map[string]types.MessageSystemAttributeValue {
+	header := os.Getenv("_X_AMZN_TRACE_ID")
+	if header == "" {
+		return nil
+	}
+	return map[string]types.MessageSystemAttributeValue{
+		string(types.MessageSystemAttributeNameForSendsAWSTraceHeader): {
+			DataType:    aws.String("String"),
+			StringValue: aws.String(header),
+		},
+	}
 }

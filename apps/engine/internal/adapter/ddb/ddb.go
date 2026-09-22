@@ -30,6 +30,7 @@ const (
 	writeInFlight = 8
 	writeTries    = 6
 	backoffBase   = 25 * time.Millisecond
+	retryChunk    = 50 // TransactWriteItems holds 100 actions; each retry is item+META, batched as N items + 1 META.
 )
 
 type Store struct {
@@ -91,7 +92,7 @@ func (st *Store) Get(ctx context.Context, decisionID string) (domain.Result, err
 }
 
 // Create writes META and every ITEM# with BatchWriteItem, several chunks in
-// flight at once.
+// flight at once. A failed write deletes every row for the batch.
 func (st *Store) Create(ctx context.Context, batchID string, customers []domain.Customer) error {
 	meta := metaKey(batchID)
 	meta["queued"] = nAttr(len(customers))
@@ -131,7 +132,13 @@ func (st *Store) Create(ctx context.Context, batchID string, customers []domain.
 		})
 	}
 	wg.Wait()
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		if delErr := st.deleteBatch(ctx, batchID); delErr != nil {
+			return errors.Join(err, delErr)
+		}
+		return err
+	}
+	return nil
 }
 
 func (st *Store) writeChunk(ctx context.Context, items []map[string]types.AttributeValue) error {
@@ -206,6 +213,161 @@ func (st *Store) Retry(ctx context.Context, batchID string, index, attempt int) 
 		return store.ErrMaxAttempts
 	}
 	return store.ErrInvalidTransition
+}
+
+func (st *Store) RetryMany(ctx context.Context, batchID string, items []store.Item) ([]store.Item, error) {
+	var queued []store.Item
+	var chunk []store.Item
+	for _, it := range items {
+		if it.Attempts >= store.MaxAttempts {
+			continue
+		}
+		chunk = append(chunk, it)
+		if len(chunk) < retryChunk {
+			continue
+		}
+		moved, err := st.retryOneChunk(ctx, batchID, chunk)
+		queued = append(queued, moved...)
+		if err != nil {
+			return queued, err
+		}
+		chunk = nil
+	}
+	moved, err := st.retryOneChunk(ctx, batchID, chunk)
+	return append(queued, moved...), err
+}
+
+func (st *Store) retryOneChunk(ctx context.Context, batchID string, items []store.Item) ([]store.Item, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	err := st.retryChunk(ctx, batchID, items)
+	if err == nil {
+		return items, nil
+	}
+	if !transactionCanceled(err) {
+		return nil, err
+	}
+	var queued []store.Item
+	for _, it := range items {
+		if err := st.Retry(ctx, batchID, it.Index, it.Attempts); err != nil {
+			if errors.Is(err, store.ErrInvalidTransition) || errors.Is(err, store.ErrMaxAttempts) {
+				continue
+			}
+			return queued, err
+		}
+		queued = append(queued, it)
+	}
+	return queued, nil
+}
+
+func (st *Store) retryChunk(ctx context.Context, batchID string, items []store.Item) error {
+	n := len(items)
+	tx := make([]types.TransactWriteItem, 0, n+1)
+	for _, it := range items {
+		tx = append(tx, types.TransactWriteItem{Update: &types.Update{
+			TableName:           aws.String(st.table),
+			Key:                 itemKey(batchID, it.Index),
+			UpdateExpression:    aws.String("SET #status = :to, #attempts = #attempts + :one"),
+			ConditionExpression: aws.String("#status = :from AND #attempts = :attempt AND #attempts < :max"),
+			ExpressionAttributeNames: map[string]string{
+				"#status":   "status",
+				"#attempts": "attempts",
+			},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":from":    sAttr(string(store.Failed)),
+				":to":      sAttr(string(store.Queued)),
+				":attempt": nAttr(it.Attempts),
+				":max":     nAttr(store.MaxAttempts),
+				":one":     nAttr(1),
+			},
+		}})
+	}
+	tx = append(tx, types.TransactWriteItem{Update: &types.Update{
+		TableName:        aws.String(st.table),
+		Key:              metaKey(batchID),
+		UpdateExpression: aws.String("ADD #failed :minus, #queued :plus"),
+		ExpressionAttributeNames: map[string]string{
+			"#failed": "failed",
+			"#queued": "queued",
+		},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":minus": nAttr(-n),
+			":plus":  nAttr(n),
+		},
+	}})
+	_, err := st.client.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{TransactItems: tx})
+	return err
+}
+
+func transactionCanceled(err error) bool {
+	var canceled *types.TransactionCanceledException
+	return errors.As(err, &canceled)
+}
+
+func (st *Store) deleteBatch(ctx context.Context, batchID string) error {
+	keys, err := st.keysForBatch(ctx, batchID)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for start := 0; start < len(keys); start += writeChunk {
+		if err := st.writeDeletes(ctx, keys[start:min(start+writeChunk, len(keys))]); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (st *Store) writeDeletes(ctx context.Context, keys []map[string]types.AttributeValue) error {
+	reqs := make([]types.WriteRequest, len(keys))
+	for i, key := range keys {
+		reqs[i] = types.WriteRequest{DeleteRequest: &types.DeleteRequest{Key: key}}
+	}
+	for try := range writeTries {
+		if try > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoffBase << (try - 1)):
+			}
+		}
+		out, err := st.client.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
+			RequestItems: map[string][]types.WriteRequest{st.table: reqs},
+		})
+		if err != nil {
+			return err
+		}
+		reqs = out.UnprocessedItems[st.table]
+		if len(reqs) == 0 {
+			return nil
+		}
+	}
+	return fmt.Errorf("delete batch: %d keys still unprocessed", len(reqs))
+}
+
+func (st *Store) keysForBatch(ctx context.Context, batchID string) ([]map[string]types.AttributeValue, error) {
+	in := &dynamodb.QueryInput{
+		TableName:              aws.String(st.table),
+		KeyConditionExpression: aws.String("pk = :pk"),
+		ProjectionExpression:   aws.String("pk, sk"),
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": sAttr("BATCH#" + batchID),
+		},
+		ConsistentRead: aws.Bool(true),
+	}
+	var keys []map[string]types.AttributeValue
+	p := dynamodb.NewQueryPaginator(st.client, in)
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range page.Items {
+			keys = append(keys, map[string]types.AttributeValue{"pk": row["pk"], "sk": row["sk"]})
+		}
+	}
+	return keys, nil
 }
 
 // Cancel moves the item from FAILED to CANCELLED. An item already CANCELLED

@@ -141,7 +141,7 @@ your Floci answers under another name on that network.
 | Target | What it does |
 |---|---|
 | `make test` | `turbo run test` — engine, lambdas, and stack. Then reaps Floci Lambda containers this stack left behind. |
-| `make loadtest` | k6 at `LOADTEST_RATE` req/s (default 100) for 10 s against `POST /evaluations/batch` (needs a local deploy). Always reaps Floci Lambda containers afterward (success or fail). The 1000 req/s NFR run is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack |
+| `make loadtest` | k6 at `LOADTEST_RATE` req/s (default 100) for 10 s against `POST /evaluations/batch` (needs a local deploy). On Floci, k6 stays at 8 VUs and the Lambdas at reserved concurrency 8/4/2; local thresholds are p95 < 2s and <1% errors. Always reaps Floci Lambda containers afterward (success or fail). The 1000 req/s NFR run is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack |
 | `make local-bootstrap` | CDK bootstrap on Floci account `000000000000` |
 | `make local-deploy` | `cdklocal deploy` |
 | `make api-url` | Prints the HTTP API base URL on the emulator |

@@ -62,6 +62,10 @@ type BatchStore interface {
 	// Retry moves a failed item on the given attempt back to queued on
 	// attempt+1. It returns ErrMaxAttempts when attempt is already MaxAttempts.
 	Retry(ctx context.Context, batchID string, index, attempt int) error
+	// RetryMany moves each failed item under MaxAttempts back to queued.
+	// Items that cannot transition are skipped. A store error stops the rest
+	// and returns the items already queued.
+	RetryMany(ctx context.Context, batchID string, items []Item) ([]Item, error)
 	// Cancel moves a failed item to cancelled. Cancelling a cancelled item
 	// succeeds and changes nothing.
 	Cancel(ctx context.Context, batchID string, index int) error
@@ -208,6 +212,24 @@ func (m *Memory) Retry(_ context.Context, batchID string, index, attempt int) er
 	b.Counters.Failed--
 	b.Counters.Queued++
 	return nil
+}
+
+func (m *Memory) RetryMany(ctx context.Context, batchID string, items []Item) ([]Item, error) {
+	var queued []Item
+	for _, it := range items {
+		if it.Attempts >= MaxAttempts {
+			continue
+		}
+		err := m.Retry(ctx, batchID, it.Index, it.Attempts)
+		if errors.Is(err, ErrInvalidTransition) || errors.Is(err, ErrMaxAttempts) {
+			continue
+		}
+		if err != nil {
+			return queued, err
+		}
+		queued = append(queued, it)
+	}
+	return queued, nil
 }
 
 func (m *Memory) Cancel(_ context.Context, batchID string, index int) error {

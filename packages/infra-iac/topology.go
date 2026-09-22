@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	stackName  = "CreditCardEngine"
+	stackName        = "CreditCardEngine"
 	functionID       = "Evaluate"
 	workerFunctionID = "Worker"
 	queueID          = "EvaluationJobs"
@@ -39,6 +39,12 @@ const (
 	lambdaTimeoutS = 3
 	lambdaMemoryMB = 256
 	latencyAlarmMs = 800
+
+	// Floci starts one container per concurrent invoke. Cap local concurrency
+	// so make loadtest does not stall the API under leftover containers.
+	flociEvaluateConcurrency = 8
+	flociWorkerConcurrency   = 4
+	flociDlqConcurrency      = 2
 
 	metricsNamespace = "CreditCardEngine"
 	dashboardName    = "CreditCardEngine"

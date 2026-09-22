@@ -79,6 +79,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		Bundling: &awscdklambdagoalpha.BundlingOptions{
 			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`),
 		},
+		ReservedConcurrentExecutions: flociReservedConcurrency(flociEvaluateConcurrency),
 	})
 	table.GrantReadWriteData(fn)
 	queue.GrantSendMessages(fn)
@@ -100,6 +101,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		Bundling: &awscdklambdagoalpha.BundlingOptions{
 			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`),
 		},
+		ReservedConcurrentExecutions: flociReservedConcurrency(flociWorkerConcurrency),
 	})
 	table.GrantReadWriteData(worker)
 	queue.GrantConsumeMessages(worker)
@@ -126,6 +128,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		Bundling: &awscdklambdagoalpha.BundlingOptions{
 			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`),
 		},
+		ReservedConcurrentExecutions: flociReservedConcurrency(flociDlqConcurrency),
 	})
 	table.GrantReadWriteData(dlqConsumer)
 	// The event source grants consume on the DLQ, and nothing else on SQS.
@@ -222,4 +225,13 @@ func lambdaEnv(env map[string]*string) *map[string]*string {
 	}
 	env["AWS_ENDPOINT_URL"] = jsii.String(endpoint)
 	return &env
+}
+
+// flociReservedConcurrency caps in-flight containers on Floci. Real AWS
+// keeps unreserved concurrency so the NFR run can scale.
+func flociReservedConcurrency(n float64) *float64 {
+	if os.Getenv("AWS_ENDPOINT_URL") == "" {
+		return nil
+	}
+	return jsii.Number(n)
 }

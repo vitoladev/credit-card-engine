@@ -41,6 +41,12 @@ const signer = new SignatureV4({
   applyChecksum: true,
 });
 
+const floci = /:4566\b|floci/i.test(base);
+// Floci starts one container per concurrent invoke; keep local VUs at the
+// reserved Lambda cap. Real AWS scales with the arrival rate.
+const maxVUs = floci ? 8 : Math.ceil(rate * 0.8);
+const preAllocatedVUs = floci ? 8 : Math.ceil(rate * 0.3);
+
 export const options = {
   scenarios: {
     nfr: {
@@ -48,15 +54,20 @@ export const options = {
       rate,
       timeUnit: "1s",
       duration: "10s",
-      // 300 and 800 VUs at 1000 req/s, scaled down with the rate.
-      preAllocatedVUs: Math.ceil(rate * 0.3),
-      maxVUs: Math.ceil(rate * 0.8),
+      preAllocatedVUs,
+      maxVUs,
     },
   },
-  thresholds: {
-    http_req_duration: ["p(99)<800", "p(95)<1000"],
-    http_req_failed: ["rate<0.01"],
-  },
+  // Floci cannot hold the 800ms p99 of real Lambda; local gate is p95 and errors.
+  thresholds: floci
+    ? {
+        http_req_duration: ["p(95)<2000"],
+        http_req_failed: ["rate<0.01"],
+      }
+    : {
+        http_req_duration: ["p(99)<800", "p(95)<1000"],
+        http_req_failed: ["rate<0.01"],
+      },
 };
 
 export default function () {

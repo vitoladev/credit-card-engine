@@ -52,25 +52,10 @@ func (u UseCase) RetryFailed(ctx context.Context, batchID string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	var (
-		jobs     []queue.Job
-		retryErr error
-	)
-	for _, it := range items {
-		if it.Attempts >= store.MaxAttempts {
-			continue
-		}
-		err := u.batches.Retry(ctx, batchID, it.Index, it.Attempts)
-		if errors.Is(err, store.ErrInvalidTransition) || errors.Is(err, store.ErrMaxAttempts) {
-			// Another operator moved this item since the query.
-			continue
-		}
-		if err != nil {
-			// Stop, but still publish the items already queued.
-			retryErr = fmt.Errorf("retry item %d: %w", it.Index, err)
-			break
-		}
-		jobs = append(jobs, queue.Job{BatchID: batchID, Index: it.Index, Attempt: it.Attempts + 1, Customer: it.Customer})
+	queued, retryErr := u.batches.RetryMany(ctx, batchID, items)
+	jobs := make([]queue.Job, len(queued))
+	for i, it := range queued {
+		jobs[i] = queue.Job{BatchID: batchID, Index: it.Index, Attempt: it.Attempts + 1, Customer: it.Customer}
 	}
 	if len(jobs) == 0 {
 		return 0, retryErr

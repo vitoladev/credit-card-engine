@@ -20,7 +20,7 @@ and the stack describe the cut.
 | `internal/markfailed` | Use case: DLQ message → `BatchStore.Fail`. |
 | `internal/recovery` | Use case: operator retry, retry-failed, and cancel of failed items (ADR 0001). |
 | `internal/report` | Use case: `batch_id` → `Report` (derived batch status, counters, approved, denied, failed, cancelled, total). |
-| `internal/queue` / `internal/store` | Ports: `queue.Publisher`, `store.BatchStore` (`Create`, `Decide`, `Fail`, `Retry`, `Cancel`, `Item`, `Failed`, `Report`), `store.DecisionStore` (`Save`, `Get`). Memory in tests, with injected write and publish failures; SQS and DynamoDB in adapters. The store owns the item status transitions. |
+| `internal/queue` / `internal/store` | Ports: `queue.Publisher`, `store.BatchStore` (`Create`, `Decide`, `Fail`, `Retry`, `RetryMany`, `Cancel`, `Item`, `Failed`, `Report`), `store.DecisionStore` (`Save`, `Get`). Memory in tests, with injected write and publish failures; SQS and DynamoDB in adapters. The store owns the item status transitions. |
 | `internal/adapter/httpapi` | HTTP API v2. Validates customers before calling a use case. Stores a single evaluation through `DecisionStore`. |
 | `internal/adapter/sqs` | Worker: consumes the queue and reports partial batch failures. |
 | `internal/adapter/dlq` | DLQ consumer: consumes the DLQ and reports partial batch failures. |
@@ -28,7 +28,7 @@ and the stack describe the cut.
 | `internal/adapter/sqspub` / `ddb` | `SendMessageBatch` publisher; both store ports on one DynamoDB table. |
 | `cmd/http` `cmd/worker` `cmd/dlq` | Composition root. JSON `slog` on stdout. |
 | `packages/infra-iac` | CDK: HTTP API with IAM authorizer except `/health`, three Lambdas, SQS with its DLQ, DynamoDB, logs, dashboard, alarms. |
-| `packages/loadtest` | k6 at `LOADTEST_RATE` req/s (default **100** locally) on `POST /evaluations/batch` for 10s. The 1000 req/s NFR run (10k jobs) is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack. |
+| `packages/loadtest` | k6 at `LOADTEST_RATE` req/s (default **100** locally) on `POST /evaluations/batch` for 10s, 8 VUs on Floci. Local gate is p95 < 2s and <1% errors; p99 < 800ms is the real-AWS NFR. The 1000 req/s NFR run (10k jobs) is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack. |
 
 ## Runtime
 
@@ -107,7 +107,9 @@ stay light; raise it with `BATCH_SIZE=1000 make local-deploy`. Otherwise `submit
 2. stores `META` (`queued=N`, `decided=0`, `failed=0`, `cancelled=0`) and one
    `ITEM#<index>` per customer (`status=QUEUED`, `attempts=1`, the customer
    input) with `BatchWriteItem`, 25 items per call, 8 calls in flight, and
-   `UnprocessedItems` retried with backoff;
+   `UnprocessedItems` retried with backoff. A failed write queries the batch
+   partition and deletes leftover rows so a retry does not hit half-written
+   keys;
 3. publishes one message per item, `{batch_id, index, attempt, customer}`,
    with `SendMessageBatch`, 10 messages per call, 10 calls in flight. The
    publisher returns the indexes that failed;
@@ -200,17 +202,26 @@ never reads one item at a time.
   moves the item back to `FAILED` (the attempt stays counted) and returns
   `503 {"error":"enqueue_failed"}`. `POST /batches/{id}/retry-failed` finds
   the failed items with one paginated `Query` (filtered to `META` and `FAILED`
-  items), retries each one under 5 attempts, and publishes them together with
-  `SendMessageBatch` in chunks of 10. Items whose publish failed go back to
-  `FAILED` and are not counted in `requeued`. There is no whole-batch cancel
-  and no automatic cancel after the last attempt: cancelling is always an
-  operator's call.
+  items), moves them `FAILED → QUEUED` with `RetryMany` (up to 50 item updates
+  plus one `META` `ADD` per `TransactWriteItems`; a cancelled transaction
+  falls back per item), and publishes them together with `SendMessageBatch`
+  in chunks of 10. Items whose publish failed go back to `FAILED` and are not
+  counted in `requeued`. There is no whole-batch cancel and no automatic
+  cancel after the last attempt: cancelling is always an operator's call.
 
 ## Observability
 
+All three Lambdas have X-Ray tracing Active. The HTTP Lambda's segment is
+the root of a batch: `sqspub` copies `_X_AMZN_TRACE_ID` onto every job as the
+SQS `AWSTraceHeader` system attribute, so the worker (and the DLQ consumer,
+if the message dies) continue that same trace. An operator retry is a new
+HTTP invocation and a new trace.
+
 Each Lambda logs JSON with `log/slog` on stdout. Keys are `snake_case`. A
 handler that returns a `5xx` logs the cause once at `error`, with no customer
-name or full CPF.
+name or full CPF. The worker and DLQ consumer log `record_failed` at `error`
+with `message_id`, `error`, and `batch_id`/`index` when the body parsed;
+never the body or customer fields.
 
 Each recorded decision writes one CloudWatch Embedded Metric Format line in
 namespace `CreditCardEngine`. A batch item writes it only when
@@ -434,6 +445,7 @@ The report:
 | HTTP API v2 | instead of REST API | less overhead; Floci covers it; no WAF/usage plan in this cut |
 | Lambda `provided.al2023` arm64 | `GoFunction` | Go binary, cold start low enough for the SLO |
 | Timeout 3s / 256 MB | — | SLO is 1s; 3s is a safety cap, not the budget |
+| Reserved concurrency 8/4/2 | Floci only (`AWS_ENDPOINT_URL` set at synth) | Floci starts one container per concurrent invoke; the cap keeps `make loadtest` from stalling the API. Real AWS stays unreserved |
 | DynamoDB on-demand | instead of RDS | keys `pk` / `sk` (see Data model); batched writes on submit, one transaction per decided item; no connection |
 | AWS managed encryption | instead of CMK | a CMK does not change the case and costs more in the demo |
 | No VPC | — | an ENI on cold start blows the 1s SLO for no reason; the table does not need a private network |
