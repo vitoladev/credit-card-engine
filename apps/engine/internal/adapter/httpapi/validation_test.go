@@ -32,7 +32,7 @@ type errorBody struct {
 func composed() (httpapi.Handler, *store.Memory, *queue.Memory) {
 	mem := store.NewMemory()
 	q := queue.NewMemory()
-	return httpapi.New(evaluate.New(rules.NewPolicy(), mem), submit.New(q), report.New(mem)), mem, q
+	return httpapi.New(evaluate.New(rules.NewPolicy()), mem, submit.New(mem, q), report.New(mem)), mem, q
 }
 
 func post(t *testing.T, h httpapi.Handler, path, body string) events.APIGatewayV2HTTPResponse {
@@ -106,8 +106,8 @@ func TestEvaluateValidation(t *testing.T) {
 			if got.Error != tc.wantError || !slices.Equal(got.Violations, tc.want) {
 				t.Fatalf("body=%s", resp.Body)
 			}
-			if stored := mem.All(); len(stored) != 0 {
-				t.Fatalf("evaluated an invalid request: %+v", stored)
+			if !mem.Empty() {
+				t.Fatal("stored a decision for an invalid request")
 			}
 		})
 	}

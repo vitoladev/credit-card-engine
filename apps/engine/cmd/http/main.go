@@ -35,7 +35,6 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 	if err != nil {
 		return httpapi.Handler{}, err
 	}
-	decisions := ddb.New(cfg, table)
-	ev := evaluate.New(rules.NewPolicy(), decisions)
-	return httpapi.New(ev, submit.New(sqspub.New(cfg, queueURL)), report.New(decisions)), nil
+	st := ddb.New(cfg, table)
+	return httpapi.New(evaluate.New(rules.NewPolicy()), st, submit.New(st, sqspub.New(cfg, queueURL)), report.New(st)), nil
 }

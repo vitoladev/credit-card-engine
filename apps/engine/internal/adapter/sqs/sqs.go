@@ -20,8 +20,7 @@ func New(jobs processjob.UseCase) Handler {
 }
 
 func Default() Handler {
-	ev := evaluate.New(rules.NewPolicy(), store.NewMemory())
-	return New(processjob.New(ev))
+	return New(processjob.New(evaluate.New(rules.NewPolicy()), store.NewMemory()))
 }
 
 func (h Handler) Handle(ctx context.Context, ev events.SQSEvent) error {

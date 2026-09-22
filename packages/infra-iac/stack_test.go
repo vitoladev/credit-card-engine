@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
@@ -24,13 +25,24 @@ func TestStackHasTheDayZeroSurface(t *testing.T) {
 	template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), map[string]any{
 		"BillingMode": "PAY_PER_REQUEST",
 		"KeySchema": []any{
-			map[string]any{"AttributeName": "report_id", "KeyType": "HASH"},
+			map[string]any{"AttributeName": "pk", "KeyType": "HASH"},
 			map[string]any{"AttributeName": "sk", "KeyType": "RANGE"},
 		},
 		"SSESpecification": map[string]any{
 			"SSEEnabled": true,
 		},
 	})
+	routes := []string{
+		"POST /evaluations",
+		"GET /evaluations/{id}",
+		"POST /evaluations/batch",
+		"GET /batches/{id}/report",
+		"GET /health",
+	}
+	template.ResourceCountIs(jsii.String("AWS::ApiGatewayV2::Route"), jsii.Number(len(routes)))
+	for _, key := range routes {
+		template.HasResourceProperties(jsii.String("AWS::ApiGatewayV2::Route"), map[string]any{"RouteKey": key})
+	}
 	template.HasResourceProperties(jsii.String("AWS::Lambda::Function"), map[string]any{
 		"Architectures": []any{"arm64"},
 		"Timeout":       3,
@@ -51,5 +63,42 @@ func TestLambdaEntriesPointAtApps(t *testing.T) {
 	}
 	if got := workerEntry(); got == "" {
 		t.Fatal("empty worker entry")
+	}
+}
+
+func lambdaEndpoints(t *testing.T) []string {
+	t.Helper()
+	app := awscdk.NewApp(nil)
+	template := assertions.Template_FromStack(NewStack(app, "Test", nil), nil)
+	fns := template.FindResources(jsii.String("AWS::Lambda::Function"), nil)
+	var got []string
+	for _, fn := range *fns {
+		vars := (*fn)["Properties"].(map[string]any)["Environment"].(map[string]any)["Variables"].(map[string]any)
+		if v, ok := vars["AWS_ENDPOINT_URL"]; ok {
+			got = append(got, v.(string))
+		}
+	}
+	return got
+}
+
+// Floci runs each Lambda in its own container on the compose network, where
+// localhost is the Lambda container itself.
+func TestLambdaEndpointReachesFloci(t *testing.T) {
+	t.Cleanup(jsii.Close)
+	for _, tc := range []struct {
+		name, endpoint, override string
+		want                     []string
+	}{
+		{"real AWS", "", "", nil},
+		{"floci default", "http://localhost:4566", "", []string{"http://floci:4566", "http://floci:4566"}},
+		{"override", "http://floci:4566", "http://other:4566", []string{"http://other:4566", "http://other:4566"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AWS_ENDPOINT_URL", tc.endpoint)
+			t.Setenv("LAMBDA_AWS_ENDPOINT_URL", tc.override)
+			if got := lambdaEndpoints(t); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
 	}
 }

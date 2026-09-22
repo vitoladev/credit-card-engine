@@ -29,11 +29,11 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 
 	table := awsdynamodb.NewTable(stack, jsii.String(tableID), &awsdynamodb.TableProps{
 		PartitionKey: &awsdynamodb.Attribute{
-			Name: jsii.String("report_id"),
+			Name: jsii.String(tablePartitionKey),
 			Type: awsdynamodb.AttributeType_STRING,
 		},
 		SortKey: &awsdynamodb.Attribute{
-			Name: jsii.String("sk"),
+			Name: jsii.String(tableSortKey),
 			Type: awsdynamodb.AttributeType_STRING,
 		},
 		BillingMode:   awsdynamodb.BillingMode_PAY_PER_REQUEST,
@@ -106,8 +106,9 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		methods []awsapigatewayv2.HttpMethod
 	}{
 		{"/evaluations", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
+		{"/evaluations/{id}", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
 		{"/evaluations/batch", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
-		{"/reports/{id}", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
+		{"/batches/{id}/report", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
 		{"/health", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
 	} {
 		api.AddRoutes(&awsapigatewayv2.AddRoutesOptions{
@@ -141,9 +142,17 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 	return stack
 }
 
+// lambdaEnv points the Lambdas at Floci when synthesising for it. Floci runs
+// each invocation in its own container on the compose network, so the
+// endpoint must be the floci service name, not localhost.
 func lambdaEnv(env map[string]*string) *map[string]*string {
-	if os.Getenv("AWS_ENDPOINT_URL") != "" {
-		env["AWS_ENDPOINT_URL"] = jsii.String("http://localhost:4566")
+	if os.Getenv("AWS_ENDPOINT_URL") == "" {
+		return &env
 	}
+	endpoint := os.Getenv("LAMBDA_AWS_ENDPOINT_URL")
+	if endpoint == "" {
+		endpoint = "http://floci:4566"
+	}
+	env["AWS_ENDPOINT_URL"] = jsii.String(endpoint)
 	return &env
 }

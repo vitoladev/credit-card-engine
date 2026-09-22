@@ -25,8 +25,9 @@ by the item's index in the batch, so a retry overwrites instead of duplicating.
 
 ## Consequences
 
-- `submit` persists each customer's input (`INPUT#<index>`), so a retry can
-  re-enqueue one item. This adds one write per customer to the submit path.
+- `submit` persists each customer's input in its batch item (`ITEM#<index>`),
+  so a retry can re-enqueue one item. The writes are batched
+  (`BatchWriteItem`), never one call per customer.
 - A batch has no stored status. It is derived from item counters: processing,
   needs attention, or completed.
 - The DLQ is a signal (alarm and investigation), not a recovery mechanism.

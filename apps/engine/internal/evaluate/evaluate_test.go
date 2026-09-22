@@ -6,11 +6,10 @@ import (
 	"engine/internal/domain"
 	"engine/internal/evaluate"
 	"engine/internal/rules"
-	"engine/internal/store"
 )
 
 func TestExecuteTable(t *testing.T) {
-	uc := evaluate.New(rules.NewPolicy(), store.NewMemory())
+	uc := evaluate.New(rules.NewPolicy())
 	good := domain.Customer{
 		Name: "Ana", CPF: "39053344705", CreditScore: 720,
 		CurrentInvoiceCents: 80_000, CreditLimitCents: 500_000,
@@ -32,10 +31,7 @@ func TestExecuteTable(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := good
 			tc.mutate(&c)
-			got, err := uc.Execute(t.Context(), "test", c)
-			if err != nil {
-				t.Fatal(err)
-			}
+			got := uc.Execute(t.Context(), c)
 			if got.Decision != tc.decision {
 				t.Fatalf("decision=%s want %s reasons=%v", got.Decision, tc.decision, got.Reasons)
 			}
@@ -56,15 +52,12 @@ func TestExecuteTable(t *testing.T) {
 }
 
 func TestAmountUsesScoreBand(t *testing.T) {
-	uc := evaluate.New(rules.NewPolicy(), store.NewMemory())
-	got, err := uc.Execute(t.Context(), "test", domain.Customer{
+	uc := evaluate.New(rules.NewPolicy())
+	got := uc.Execute(t.Context(), domain.Customer{
 		Name: "Boa", CPF: "12345678909", CreditScore: 820,
 		CurrentInvoiceCents: 100_000, CreditLimitCents: 1_000_000,
 		MonthlySpendCents: []int64{100_000},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	if got.RevolvingAmountCents != 800_000 {
 		t.Fatalf("amount=%d", got.RevolvingAmountCents)
 	}

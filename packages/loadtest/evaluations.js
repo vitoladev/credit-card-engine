@@ -42,6 +42,6 @@ export default function () {
   check(res, {
     "status 202": (r) => r.status === 202,
     "queued": (r) => r.json("queued") === 1,
-    "report_id": (r) => Boolean(r.json("report_id")),
+    "batch_id": (r) => Boolean(r.json("batch_id")),
   });
 }

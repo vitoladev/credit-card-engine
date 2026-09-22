@@ -32,6 +32,5 @@ func compose(ctx context.Context) (sqs.Handler, error) {
 	if err != nil {
 		return sqs.Handler{}, err
 	}
-	ev := evaluate.New(rules.NewPolicy(), ddb.New(cfg, table))
-	return sqs.New(processjob.New(ev)), nil
+	return sqs.New(processjob.New(evaluate.New(rules.NewPolicy()), ddb.New(cfg, table))), nil
 }

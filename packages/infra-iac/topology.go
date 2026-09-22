@@ -14,6 +14,10 @@ const (
 	tableID          = "Decisions"
 	alarmID          = "EvaluateAlarms"
 
+	// Generic keys: one table holds DECISION#, BATCH# META and ITEM# rows.
+	tablePartitionKey = "pk"
+	tableSortKey      = "sk"
+
 	// Loadtest: 1000 req/s on POST /evaluations/batch (SQS enqueue).
 	// Stage headroom above 10k evals/min (~167 rps).
 	stageRateLimit  = 1200

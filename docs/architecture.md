@@ -14,14 +14,14 @@ and the stack describe the cut.
 |---|---|
 | `internal/domain` | Customer profile, its validation, and the decision. No I/O. |
 | `internal/rules` | Chain of Responsibility plus the `AmountPolicy` strategy. `NewPolicy()` is the policy factory. |
-| `internal/evaluate` | Use case: one customer → `Result`. Applies the `rules.Policy`: the chain decides, the amount policy sizes an approval. |
-| `internal/submit` | Use case: list → `202` + one SQS job per customer, shared `report_id`. |
-| `internal/processjob` | Use case: queue job → evaluate + persist on the report. |
-| `internal/report` | Use case: `report_id` → snapshot (approved, denied, amount). |
-| `internal/queue` / `internal/store` | Ports. Memory in tests; SQS and Dynamo in adapters. |
-| `internal/adapter/httpapi` | HTTP API v2. Validates customers before calling a use case. |
+| `internal/evaluate` | Use case: one customer → `Result`. Applies the `rules.Policy`: the chain decides, the amount policy sizes an approval. Stores nothing; the caller records the decision. |
+| `internal/submit` | Use case: at most 1000 customers → a `batch_id`, every batch item stored `QUEUED`, then one SQS message per item. |
+| `internal/processjob` | Use case: queue message → evaluate → `BatchStore.Decide`. A repeated delivery is a no-op. |
+| `internal/report` | Use case: `batch_id` → `Report` (derived batch status, counters, approved, denied, failed, cancelled, total). |
+| `internal/queue` / `internal/store` | Ports: `queue.Publisher`, `store.BatchStore` (`Create`, `Decide`, `Report`), `store.DecisionStore` (`Save`, `Get`). Memory in tests; SQS and DynamoDB in adapters. The store owns the item status transitions. |
+| `internal/adapter/httpapi` | HTTP API v2. Validates customers before calling a use case. Stores a single evaluation through `DecisionStore`. |
 | `internal/adapter/sqs` | Worker: consumes the queue. |
-| `internal/adapter/sqspub` / `ddb` | Publishes jobs and writes decisions. |
+| `internal/adapter/sqspub` / `ddb` | `SendMessageBatch` publisher; both store ports on one DynamoDB table. |
 | `cmd/http` `cmd/worker` | Composition root. |
 | `packages/infra-iac` | CDK: HTTP API, two Lambdas, SQS, DynamoDB, logs, alarms. |
 | `packages/loadtest` | k6 at **1000 req/s** on `POST /evaluations/batch` (10s = 10k jobs). |
@@ -33,7 +33,8 @@ flowchart LR
   subgraph clients [Ingress]
     sync["POST /evaluations"]
     batch["POST /evaluations/batch"]
-    get["GET /reports/:id"]
+    getOne["GET /evaluations/:id"]
+    getReport["GET /batches/:id/report"]
   end
 
   subgraph edge [AWS — CDK]
@@ -41,7 +42,7 @@ flowchart LR
     fn["Lambda HTTP\narm64 / 3s"]
     q["SQS EvaluationJobs"]
     worker["Lambda worker\nSQS batch 10"]
-    ddb[("DynamoDB\nPK report_id / SK")]
+    ddb[("DynamoDB\npk / sk")]
     logs["CloudWatch Logs\n14d"]
     alarms["Alarms\nerrors and p99 > 800ms"]
   end
@@ -53,23 +54,88 @@ flowchart LR
   end
 
   sync --> api --> fn --> ev
-  batch --> api --> fn --> q --> worker --> ev
-  get --> api --> fn --> ddb
+  fn -->|"DECISION# / RESULT"| ddb
+  batch --> api --> fn -->|"BatchWriteItem META + ITEM#"| ddb
+  fn -->|SendMessageBatch| q --> worker --> ev
+  worker -->|"TransactWriteItems QUEUED → DECIDED"| ddb
+  getOne --> api
+  getReport --> api
   ev --> chain --> domain
-  ev --> ddb
   fn --> logs
   fn --> alarms
 ```
 
 Two paths, on purpose:
 
-- **Sync** (`POST /evaluations`): one customer, 1s SLO, decide now.
-- **Batch** (`POST /evaluations/batch` → SQS → worker → `GET /reports/:id`):
-  HTTP only enqueues. This is the 1000 req/s loadtest path.
+- **Sync** (`POST /evaluations`): one customer, 1s SLO, decide now. The
+  decision is stored under a new `decision_id` and read back with
+  `GET /evaluations/{id}`.
+- **Batch** (`POST /evaluations/batch` → SQS → worker →
+  `GET /batches/{id}/report`): HTTP stores the batch items and enqueues. This
+  is the 1000 req/s loadtest path.
 
-Dynamo runs **after** the verdict. If the table is down on the sync path, the
-decision is already computed and persist returns 500 (the client retries). On
-batch, HTTP already returned 202; SQS retries the worker.
+DynamoDB runs **after** the decision. If the table is down on the sync path,
+the decision is already computed and the store returns `500` (the client
+retries). On batch, HTTP already returned `202`; SQS retries the worker.
+
+### Batch submission
+
+`POST /evaluations/batch` accepts at most **1000** customers. A larger batch
+returns `422 {"error":"batch_too_large","max":1000}` and nothing is stored or
+queued. Otherwise `submit`:
+
+1. creates a `batch_id`;
+2. stores `META` (`queued=N`, `decided=0`, `failed=0`, `cancelled=0`) and one
+   `ITEM#<index>` per customer (`status=QUEUED`, `attempts=1`, the customer
+   input) with `BatchWriteItem`, 25 items per call, 8 calls in flight, and
+   `UnprocessedItems` retried with backoff;
+3. publishes one message per item, `{batch_id, index, attempt, customer}`,
+   with `SendMessageBatch`, 10 messages per call, 10 calls in flight. The
+   publisher returns the indexes that failed;
+4. returns `202 {"batch_id","queued"}`. If any message failed to publish, it
+   returns `500 {"error":"enqueue_failed"}`.
+
+Items are stored before any message is published, so a message never names an
+item that does not exist. No step makes one call per customer.
+
+### Batch item status
+
+The worker evaluates the message and calls
+`BatchStore.Decide(batch_id, index, attempt, result)`. One DynamoDB transaction
+(`TransactWriteItems`) moves the item from `QUEUED` to `DECIDED`, stores the
+result, and updates `META` (`queued−1`, `decided+1`), only if the item is
+`QUEUED` on the same attempt. A repeated delivery fails that condition, gets
+`ErrInvalidTransition`, and the worker treats it as success: the item is
+decided once and the total is not inflated.
+
+The batch status is derived from the `META` counters on every read, never
+stored:
+
+| Batch status | When |
+|---|---|
+| `PROCESSING` | `queued > 0` |
+| `NEEDS_ATTENTION` | `queued = 0` and `failed > 0` |
+| `COMPLETED` | otherwise (every item decided or cancelled) |
+
+`GET /batches/{id}/report` reads the whole batch with one paginated `Query` on
+`pk = BATCH#<batch_id>`, following `LastEvaluatedKey` past 1 MB pages. It
+never reads one item at a time.
+
+## Data model
+
+One DynamoDB table, `Decisions`, with generic keys `pk` (string) and `sk`
+(string).
+
+| `pk` | `sk` | Attributes |
+|---|---|---|
+| `DECISION#<decision_id>` | `RESULT` | `customer` (input JSON), `result` (decision JSON) |
+| `BATCH#<batch_id>` | `META` | `queued`, `decided`, `failed`, `cancelled` |
+| `BATCH#<batch_id>` | `ITEM#<index>` | `index`, `customer` (input JSON), `status`, `attempts`, `result` once decided |
+
+The input and the item status live in one item, so there is no separate input
+row. Stored decisions and batch items, including the full CPF and name, are
+kept with no expiry (no TTL): they are the audit record. Every API response
+masks the CPF (`***` + last 2 digits).
 
 ## Packages
 
@@ -88,13 +154,15 @@ flowchart TB
   httpapi --> evaluate
   httpapi --> submit
   httpapi --> report
+  httpapi --> store
   submit --> queue["queue"]
+  submit --> store
   report --> store
   sqs --> job["processjob"]
   job --> evaluate
   job --> queue
+  job --> store
   evaluate["evaluate"] --> chain["rules"]
-  evaluate --> store["store"]
   chain --> domain["domain"]
   store --> domain
   queue --> domain
@@ -123,7 +191,7 @@ before it reaches a use case.
   invalid customer → `422 {"error":"invalid_customer","violations":[...]}`.
 - `POST /evaluations/batch`: if any customer is invalid, the whole batch is
   rejected with `422`, each violation carries the customer's `index`, and
-  nothing is published.
+  nothing is stored or published.
 
 ```json
 {"error":"invalid_customer","violations":[{"index":1,"field":"cpf","code":"invalid_check_digits"}]}
@@ -202,9 +270,29 @@ Wire types: `events.APIGatewayV2HTTPRequest` / `HTTPResponse`.
 | Method | Path | Body | Response |
 |---|---|---|---|
 | `GET` | `/health` | — | `{"status":"ok"}` |
-| `POST` | `/evaluations` | one `Customer` | `200` + `Result` (sync, 1s SLO); `400` malformed JSON; `422` invalid customer |
-| `POST` | `/evaluations/batch` | `{customers:[...]}` or array | `202` + `{report_id, queued}`; `422` with indexed violations, nothing published |
-| `GET` | `/reports/{id}` | — | snapshot: approved, denied, `released_cents` |
+| `POST` | `/evaluations` | one `Customer` | `200` + `{decision_id, ...Result}` (sync, 1s SLO); `400` malformed JSON; `422` invalid customer |
+| `GET` | `/evaluations/{id}` | — | `200` + the same `{decision_id, ...Result}`; `404 {"error":"not_found"}` |
+| `POST` | `/evaluations/batch` | `{customers:[...]}` or array, at most 1000 | `202` + `{batch_id, queued}`; `422` with indexed violations or `batch_too_large`, nothing stored or published |
+| `GET` | `/batches/{id}/report` | — | `200` + report; `404 {"error":"not_found"}` |
+
+The report:
+
+```json
+{
+  "batch_id": "…",
+  "status": "COMPLETED",
+  "counters": {"queued": 0, "decided": 2, "failed": 0, "cancelled": 0},
+  "approved": [{"index": 0, "name": "Ana Souza", "cpf_masked": "***05", "decision": "APPROVED",
+                "reasons": ["eligible"], "revolving_amount_cents": 400000, "attempts": 1}],
+  "denied": [{"index": 1, "name": "Bruno Lima", "cpf_masked": "***09", "decision": "DENIED",
+              "reasons": ["score_below_600"], "revolving_amount_cents": 0, "attempts": 1}],
+  "failed": [],
+  "cancelled": [],
+  "total_revolving_amount_cents": 400000
+}
+```
+
+`total_revolving_amount_cents` sums approved items only.
 
 ## Infra (CDK Go)
 
@@ -216,12 +304,13 @@ Wire types: `events.APIGatewayV2HTTPRequest` / `HTTPResponse`.
 | HTTP API v2 | instead of REST API | less overhead; Floci covers it; no WAF/usage plan in this cut |
 | Lambda `provided.al2023` arm64 | `GoFunction` | Go binary, cold start low enough for the SLO |
 | Timeout 3s / 256 MB | — | SLO is 1s; 3s is a safety cap, not the budget |
-| DynamoDB on-demand | instead of RDS | 1 Put per evaluation, PK `report_id`; no connection |
+| DynamoDB on-demand | instead of RDS | keys `pk` / `sk` (see Data model); batched writes on submit, one transaction per decided item; no connection |
 | AWS managed encryption | instead of CMK | a CMK does not change the case and costs more in the demo |
 | No VPC | — | an ENI on cold start blows the 1s SLO for no reason; the table does not need a private network |
 | No Cognito / authorizer | — | this cut is a simulation with fictional data |
 | No SAM | — | one IaC, in the same language as the engine |
-| Worker + SQS | 1000 req/s batch | HTTP only `SendMessageBatch`; the worker evaluates and persists |
+| Worker + SQS | 1000 req/s batch | HTTP stores the items with `BatchWriteItem` and publishes with `SendMessageBatch`; the worker evaluates and decides the item |
+| Routes | `POST /evaluations`, `GET /evaluations/{id}`, `POST /evaluations/batch`, `GET /batches/{id}/report`, `GET /health` | one HTTP Lambda serves every route; both Lambdas read and write the table, the HTTP Lambda sends to the queue |
 
 ```bash
 make test
