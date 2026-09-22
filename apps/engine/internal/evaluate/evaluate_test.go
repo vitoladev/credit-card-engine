@@ -10,10 +10,10 @@ import (
 )
 
 func TestExecuteTable(t *testing.T) {
-	uc := evaluate.New(rules.NewChain(), store.NewMemory())
+	uc := evaluate.New(rules.NewPolicy(), store.NewMemory())
 	good := domain.Customer{
 		Name: "Ana", CPF: "39053344705", CreditScore: 720,
-		CurrentInvoiceCents: 80_000, AvailableLimitCents: 500_000,
+		CurrentInvoiceCents: 80_000, CreditLimitCents: 500_000,
 		LatePayments: 0, MonthlySpendCents: []int64{100_000, 110_000, 90_000},
 	}
 	cases := []struct {
@@ -25,7 +25,8 @@ func TestExecuteTable(t *testing.T) {
 		{name: "approved", mutate: func(*domain.Customer) {}, decision: domain.Approved, reason: "eligible"},
 		{name: "low score", mutate: func(c *domain.Customer) { c.CreditScore = 500 }, decision: domain.Denied, reason: "score_below_600"},
 		{name: "lates", mutate: func(c *domain.Customer) { c.LatePayments = 4 }, decision: domain.Denied, reason: "late_payments_above_2"},
-		{name: "invoice", mutate: func(c *domain.Customer) { c.CurrentInvoiceCents = 600_000 }, decision: domain.Denied, reason: "invoice_exceeds_available_limit"},
+		{name: "invoice", mutate: func(c *domain.Customer) { c.CurrentInvoiceCents = 600_000 }, decision: domain.Denied, reason: "invoice_exceeds_credit_limit"},
+		{name: "empty spend history", mutate: func(c *domain.Customer) { c.MonthlySpendCents = nil }, decision: domain.Denied, reason: "insufficient_spend_history"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -41,11 +42,11 @@ func TestExecuteTable(t *testing.T) {
 			if len(got.Reasons) == 0 || got.Reasons[0] != tc.reason {
 				t.Fatalf("reasons=%v want %s", got.Reasons, tc.reason)
 			}
-			if got.Decision == domain.Approved && got.MaxAmountCents <= 0 {
+			if got.Decision == domain.Approved && got.RevolvingAmountCents <= 0 {
 				t.Fatal("approved with zero amount")
 			}
-			if got.Decision == domain.Denied && got.MaxAmountCents != 0 {
-				t.Fatalf("denied with amount %d", got.MaxAmountCents)
+			if got.Decision == domain.Denied && got.RevolvingAmountCents != 0 {
+				t.Fatalf("denied with amount %d", got.RevolvingAmountCents)
 			}
 			if got.CPFMasked == c.CPF {
 				t.Fatal("result leaked raw CPF")
@@ -55,15 +56,16 @@ func TestExecuteTable(t *testing.T) {
 }
 
 func TestAmountUsesScoreBand(t *testing.T) {
-	uc := evaluate.New(rules.NewChain(), store.NewMemory())
+	uc := evaluate.New(rules.NewPolicy(), store.NewMemory())
 	got, err := uc.Execute(t.Context(), "test", domain.Customer{
-		Name: "Boa", CPF: "12345678901", CreditScore: 820,
-		CurrentInvoiceCents: 100_000, AvailableLimitCents: 1_000_000,
+		Name: "Boa", CPF: "12345678909", CreditScore: 820,
+		CurrentInvoiceCents: 100_000, CreditLimitCents: 1_000_000,
+		MonthlySpendCents: []int64{100_000},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.MaxAmountCents != 800_000 {
-		t.Fatalf("amount=%d", got.MaxAmountCents)
+	if got.RevolvingAmountCents != 800_000 {
+		t.Fatalf("amount=%d", got.RevolvingAmountCents)
 	}
 }

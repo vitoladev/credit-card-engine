@@ -26,13 +26,26 @@ BASE="$(make -s api-url)"
 curl -s "$BASE/health"
 curl -s -X POST "$BASE/evaluations" \
   -H 'content-type: application/json' \
-  --data '{"name":"Ana","cpf":"39053344705","credit_score":780,"current_invoice_cents":50000,"available_limit_cents":500000,"monthly_spend_cents":[80000,90000,70000]}'
+  --data '{"name":"Ana","cpf":"390.533.447-05","credit_score":780,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000,90000,70000]}'
 curl -s -X POST "$BASE/evaluations/batch" \
   -H 'content-type: application/json' \
   --data-binary @apps/engine/testdata/customers.json
 ```
 
-`POST /evaluations/batch` returns `202` with `report_id` and `queued`.
+`POST /evaluations` returns `200` with the decision and
+`revolving_amount_cents`. A CPF may be sent masked or bare. Malformed JSON
+returns `400`; an invalid customer returns `422` with every violation:
+
+```bash
+curl -s -X POST "$BASE/evaluations" \
+  -H 'content-type: application/json' \
+  --data '{"name":"Ana","cpf":"39053344706","credit_score":-1,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000]}'
+# {"error":"invalid_customer","violations":[{"field":"cpf","code":"invalid_check_digits"},{"field":"credit_score","code":"negative"}]}
+```
+
+`POST /evaluations/batch` returns `202` with `report_id` and `queued`. If any
+customer is invalid, it returns `422` with each violation's `index` and
+publishes nothing.
 The worker drains SQS and writes to Dynamo. Then:
 
 ```bash

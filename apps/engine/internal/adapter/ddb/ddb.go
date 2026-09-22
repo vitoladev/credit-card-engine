@@ -5,7 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -55,7 +55,7 @@ func (s *Store) List(ctx context.Context, reportID string) ([]domain.Result, err
 	for _, item := range out.Items {
 		payload, ok := item["payload"].(*types.AttributeValueMemberS)
 		if !ok {
-			return nil, fmt.Errorf("payload missing")
+			return nil, errors.New("payload missing")
 		}
 		var r domain.Result
 		if err := json.Unmarshal([]byte(payload.Value), &r); err != nil {

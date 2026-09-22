@@ -20,7 +20,7 @@ func New(jobs processjob.UseCase) Handler {
 }
 
 func Default() Handler {
-	ev := evaluate.New(rules.NewChain(), store.NewMemory())
+	ev := evaluate.New(rules.NewPolicy(), store.NewMemory())
 	return New(processjob.New(ev))
 }
 

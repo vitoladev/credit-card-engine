@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -29,13 +29,13 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 	table := os.Getenv("DECISIONS_TABLE")
 	queueURL := os.Getenv("QUEUE_URL")
 	if table == "" || queueURL == "" {
-		return httpapi.Handler{}, fmt.Errorf("DECISIONS_TABLE and QUEUE_URL required")
+		return httpapi.Handler{}, errors.New("DECISIONS_TABLE and QUEUE_URL required")
 	}
 	cfg, err := awsconfig.Load(ctx)
 	if err != nil {
 		return httpapi.Handler{}, err
 	}
 	decisions := ddb.New(cfg, table)
-	ev := evaluate.New(rules.NewChain(), decisions)
+	ev := evaluate.New(rules.NewPolicy(), decisions)
 	return httpapi.New(ev, submit.New(sqspub.New(cfg, queueURL)), report.New(decisions)), nil
 }

@@ -9,18 +9,18 @@ import (
 )
 
 type UseCase struct {
-	chain rules.Handler
-	store store.DecisionStore
+	policy rules.Policy
+	store  store.DecisionStore
 }
 
-func New(chain rules.Handler, decisions store.DecisionStore) UseCase {
-	if chain == nil {
-		chain = rules.NewChain()
+func New(policy rules.Policy, decisions store.DecisionStore) UseCase {
+	if policy.Chain == nil || policy.Amount == nil {
+		policy = rules.NewPolicy()
 	}
 	if decisions == nil {
 		decisions = store.NewMemory()
 	}
-	return UseCase{chain: chain, store: decisions}
+	return UseCase{policy: policy, store: decisions}
 }
 
 func (u UseCase) Execute(ctx context.Context, reportID string, c domain.Customer) (domain.Result, error) {
@@ -29,13 +29,13 @@ func (u UseCase) Execute(ctx context.Context, reportID string, c domain.Customer
 		CPFMasked: domain.MaskCPF(c.CPF),
 		Decision:  domain.Approved,
 	}
-	ok, reason := u.chain.Handle(c)
+	ok, reason := u.policy.Chain.Handle(c)
 	if !ok {
 		out.Decision = domain.Denied
 		out.Reasons = []string{reason}
 		return u.save(ctx, reportID, out)
 	}
-	out.MaxAmountCents = amount(c)
+	out.RevolvingAmountCents = u.policy.Amount.Amount(c)
 	out.Reasons = []string{"eligible"}
 	return u.save(ctx, reportID, out)
 }
@@ -45,19 +45,4 @@ func (u UseCase) save(ctx context.Context, reportID string, r domain.Result) (do
 		return domain.Result{}, err
 	}
 	return r, nil
-}
-
-func amount(c domain.Customer) int64 {
-	var bps int64
-	switch {
-	case c.CreditScore >= 800:
-		bps = 8000
-	case c.CreditScore >= 700:
-		bps = 5000
-	default:
-		bps = 3000
-	}
-	byScore := c.AvailableLimitCents * bps / 10000
-	headroom := c.AvailableLimitCents - c.CurrentInvoiceCents
-	return max(0, min(byScore, headroom))
 }

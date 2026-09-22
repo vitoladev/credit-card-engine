@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -26,12 +26,12 @@ func main() {
 func compose(ctx context.Context) (sqs.Handler, error) {
 	table := os.Getenv("DECISIONS_TABLE")
 	if table == "" {
-		return sqs.Handler{}, fmt.Errorf("DECISIONS_TABLE required")
+		return sqs.Handler{}, errors.New("DECISIONS_TABLE required")
 	}
 	cfg, err := awsconfig.Load(ctx)
 	if err != nil {
 		return sqs.Handler{}, err
 	}
-	ev := evaluate.New(rules.NewChain(), ddb.New(cfg, table))
+	ev := evaluate.New(rules.NewPolicy(), ddb.New(cfg, table))
 	return sqs.New(processjob.New(ev)), nil
 }

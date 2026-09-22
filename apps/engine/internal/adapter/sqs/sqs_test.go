@@ -17,13 +17,13 @@ import (
 
 func TestHandleEvaluatesEachRecord(t *testing.T) {
 	mem := store.NewMemory()
-	h := sqs.New(processjob.New(evaluate.New(rules.NewChain(), mem)))
+	h := sqs.New(processjob.New(evaluate.New(rules.NewPolicy(), mem)))
 	body, err := json.Marshal(queue.Job{
 		ReportID: "r1",
 		Queued:   1,
 		Customer: domain.Customer{
 			Name: "Ana", CPF: "39053344705", CreditScore: 780,
-			CurrentInvoiceCents: 50_000, AvailableLimitCents: 500_000,
+			CurrentInvoiceCents: 50_000, CreditLimitCents: 500_000,
 			MonthlySpendCents: []int64{80_000, 90_000, 70_000},
 		},
 	})

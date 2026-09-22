@@ -3,7 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -29,7 +29,7 @@ func New(ev evaluate.UseCase, sub submit.UseCase, rep report.UseCase) Handler {
 
 func Default() Handler {
 	mem := store.NewMemory()
-	ev := evaluate.New(rules.NewChain(), mem)
+	ev := evaluate.New(rules.NewPolicy(), mem)
 	return New(ev, submit.New(queue.NewMemory()), report.New(mem))
 }
 
@@ -57,11 +57,14 @@ func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 func (h Handler) one(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	var c domain.Customer
 	if err := json.Unmarshal([]byte(req.Body), &c); err != nil {
-		return jsonResp(400, map[string]string{"error": "invalid_customer"}), nil
+		return jsonResp(400, map[string]string{"error": "invalid_json"}), nil //nolint:nilerr // the adapter maps the error to a status code
+	}
+	if v := c.Validate(); len(v) > 0 {
+		return jsonResp(422, map[string]any{"error": "invalid_customer", "violations": v}), nil
 	}
 	r, err := h.evaluate.Execute(ctx, "sync", c)
 	if err != nil {
-		return jsonResp(500, map[string]string{"error": "store_failed"}), nil
+		return jsonResp(500, map[string]string{"error": "store_failed"}), nil //nolint:nilerr // the adapter maps the error to a status code
 	}
 	return jsonResp(200, r), nil
 }
@@ -69,11 +72,20 @@ func (h Handler) one(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 func (h Handler) enqueue(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	customers, err := parseCustomers(req.Body)
 	if err != nil {
-		return jsonResp(400, map[string]string{"error": "invalid_batch"}), nil
+		return jsonResp(400, map[string]string{"error": "invalid_batch"}), nil //nolint:nilerr // the adapter maps the error to a status code
+	}
+	var violations []indexedViolation
+	for i := range customers {
+		for _, v := range customers[i].Validate() {
+			violations = append(violations, indexedViolation{Index: i, Violation: v})
+		}
+	}
+	if len(violations) > 0 {
+		return jsonResp(422, map[string]any{"error": "invalid_customer", "violations": violations}), nil
 	}
 	acc, err := h.submit.Execute(ctx, customers)
 	if err != nil {
-		return jsonResp(500, map[string]string{"error": "enqueue_failed"}), nil
+		return jsonResp(500, map[string]string{"error": "enqueue_failed"}), nil //nolint:nilerr // the adapter maps the error to a status code
 	}
 	return jsonResp(202, acc), nil
 }
@@ -84,9 +96,14 @@ func (h Handler) snapshot(ctx context.Context, id string) (events.APIGatewayV2HT
 	}
 	snap, err := h.report.Execute(ctx, id)
 	if err != nil {
-		return jsonResp(500, map[string]string{"error": "store_failed"}), nil
+		return jsonResp(500, map[string]string{"error": "store_failed"}), nil //nolint:nilerr // the adapter maps the error to a status code
 	}
 	return jsonResp(200, snap), nil
+}
+
+type indexedViolation struct {
+	Index int `json:"index"`
+	domain.Violation
 }
 
 func parseCustomers(body string) ([]domain.Customer, error) {
@@ -99,7 +116,7 @@ func parseCustomers(body string) ([]domain.Customer, error) {
 	}
 	var list []domain.Customer
 	if err := json.Unmarshal([]byte(body), &list); err != nil || len(list) == 0 {
-		return nil, fmt.Errorf("invalid_batch")
+		return nil, errors.New("invalid_batch")
 	}
 	return list, nil
 }

@@ -14,13 +14,13 @@ import (
 
 func TestExecutePersistsApproved(t *testing.T) {
 	mem := store.NewMemory()
-	uc := processjob.New(evaluate.New(rules.NewChain(), mem))
+	uc := processjob.New(evaluate.New(rules.NewPolicy(), mem))
 	body, err := json.Marshal(queue.Job{
 		ReportID: "r1",
 		Queued:   1,
 		Customer: domain.Customer{
 			Name: "Ana", CPF: "39053344705", CreditScore: 780,
-			CurrentInvoiceCents: 50_000, AvailableLimitCents: 500_000,
+			CurrentInvoiceCents: 50_000, CreditLimitCents: 500_000,
 			MonthlySpendCents: []int64{80_000, 90_000, 70_000},
 		},
 	})
@@ -40,7 +40,7 @@ func TestExecutePersistsApproved(t *testing.T) {
 }
 
 func TestExecuteRejectsInvalidJSON(t *testing.T) {
-	uc := processjob.New(evaluate.New(rules.NewChain(), store.NewMemory()))
+	uc := processjob.New(evaluate.New(rules.NewPolicy(), store.NewMemory()))
 	if err := uc.Execute(t.Context(), []byte("{")); err == nil {
 		t.Fatal("expected error")
 	}

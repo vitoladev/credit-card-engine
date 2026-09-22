@@ -12,7 +12,7 @@ const batch = JSON.stringify([
     cpf: "39053344705",
     credit_score: 780,
     current_invoice_cents: 50000,
-    available_limit_cents: 500000,
+    credit_limit_cents: 500000,
     late_payments: 0,
     monthly_spend_cents: [80000, 90000, 70000],
   },

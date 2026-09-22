@@ -21,7 +21,7 @@ func From(reportID string, items []domain.Result) Snapshot {
 		switch r.Decision {
 		case domain.Approved:
 			s.Approved = append(s.Approved, r)
-			s.ReleasedCents += r.MaxAmountCents
+			s.ReleasedCents += r.RevolvingAmountCents
 		case domain.Denied:
 			s.Denied = append(s.Denied, r)
 		default:

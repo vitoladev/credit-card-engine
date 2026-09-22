@@ -3,7 +3,7 @@ package processjob
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
 
 	"engine/internal/evaluate"
 	"engine/internal/queue"
@@ -23,7 +23,7 @@ func (u UseCase) Execute(ctx context.Context, body []byte) error {
 		return err
 	}
 	if job.ReportID == "" {
-		return fmt.Errorf("missing report_id")
+		return errors.New("missing report_id")
 	}
 	_, err := u.evaluate.Execute(ctx, job.ReportID, job.Customer)
 	return err

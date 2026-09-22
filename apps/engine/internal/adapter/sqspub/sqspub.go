@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -31,7 +32,7 @@ func (p *Publisher) Publish(ctx context.Context, jobs []queue.Job) error {
 				return err
 			}
 			entries = append(entries, types.SendMessageBatchRequestEntry{
-				Id:          aws.String(fmt.Sprintf("%d", start+i)),
+				Id:          aws.String(strconv.Itoa(start + i)),
 				MessageBody: aws.String(string(body)),
 			})
 		}
