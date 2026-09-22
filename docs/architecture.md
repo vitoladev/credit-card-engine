@@ -4,7 +4,7 @@ A revolving-credit evaluation. The cut is the rules engine, the report, and
 the AWS infra that backs the criteria.
 
 IaC is CDK in Go (`packages/infra-iac/`). The product lives in
-`apps/engine/`, split by use case. This file, `apps/engine/architecture_test.go`,
+`apps/engine/`, split into two deep modules: `evaluate` and `batch`. This file, `apps/engine/architecture_test.go`,
 and the stack describe the cut.
 
 ## Cut
@@ -12,19 +12,15 @@ and the stack describe the cut.
 | Piece | Role |
 |---|---|
 | `internal/domain` | Customer profile, its validation, and the decision. No I/O. |
-| `internal/rules` | Chain of Responsibility plus the `AmountPolicy` strategy. `NewPolicy()` is the policy factory. |
-| `internal/evaluate` | Evaluates one customer and returns a `Result`. Applies the `rules.Policy`. The chain decides. The amount policy sizes an approval. Stores nothing. The caller records the decision. |
-| `internal/submit` | Accepts at most `BATCH_SIZE` customers (default 100, max 1000), returns a `batch_id`, stores every batch item as `QUEUED`, then publishes one SQS message per item. An item whose publish failed is marked `FAILED`. |
-| `internal/processjob` | Takes a queue message, evaluates it, and calls `BatchStore.Decide`. A repeated delivery is a no-op. |
-| `internal/markfailed` | Takes a DLQ message and calls `BatchStore.Fail`. |
-| `internal/recovery` | Operator retry, retry-failed, and cancel of failed items ([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)). |
-| `internal/report` | Takes a `batch_id` and returns a `Report` (derived batch status, counters, approved, denied, failed, cancelled, total). |
-| `internal/queue` and `internal/store` | Ports: `queue.Publisher`, `store.BatchStore` (`Create`, `Decide`, `Fail`, `Retry`, `RetryMany`, `Cancel`, `Item`, `Failed`, `Report`), `store.DecisionStore` (`Save`, `Get`). Memory in tests, with injected write and publish failures. SQS and DynamoDB in adapters. The store owns the item status transitions. |
-| `internal/adapter/httpapi` | HTTP API v2. Validates customers before calling a use case. Stores a single evaluation through `DecisionStore`. |
-| `internal/adapter/sqs` | Consumes the queue and reports partial batch failures. |
-| `internal/adapter/dlq` | Consumes the DLQ and reports partial batch failures. |
-| `internal/adapter/telemetry` | EMF logger. One JSON line per decision or failed item, no AWS SDK. |
-| `internal/adapter/sqspub` and `ddb` | `SendMessageBatch` publisher. Both store ports on one DynamoDB table. |
+| `internal/rules` | `Policy.Evaluate(Customer) Result`: ordered `Rule` funcs (the first that denies decides) plus the score bands that size an approval. `NewPolicy()` is the product policy. Pure. |
+| `internal/evaluate` | The single evaluation. `Evaluate(ctx, customer)` applies the policy, records the decision, and only then returns it (fail closed). `Get` reads a recorded decision. Declares its ports: `DecisionStore` (`Save`, `Get`) and `Emitter`. |
+| `internal/batch` | The batch and its items. `Submit`, `Process(Attempt)`, `DeadLetter(Attempt)`, `Retry`, `RetryFailed`, `Cancel`, `Report`. Stores before it publishes, fails an item whose publish failed, builds each `Attempt` message, derives the report and batch status, and emits the item metrics. Declares its ports: `Items`, `Publisher`, `Emitter` ([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)). |
+| `internal/adapter/httpapi` | HTTP API v2. Validates customers, calls `evaluate` or `batch`, and maps their errors to status codes. |
+| `internal/adapter/sqs` | One queue consumer with two roles: `Worker` (queue, calls `batch.Process`) and `DeadLetters` (DLQ, calls `batch.DeadLetter`). Reports partial batch failures. |
+| `internal/adapter/ddb` | Implements `batch.Items` and `evaluate.DecisionStore` on one DynamoDB table. The item status transitions are its conditional updates. |
+| `internal/adapter/sqspub` | Implements `batch.Publisher` with `SendMessageBatch`. |
+| `internal/adapter/telemetry` | `EMF` implements both `Emitter` ports. One JSON line per decision or failed item, no AWS SDK. |
+| `internal/flocitest` | Test-only. AWS config for Floci, fresh tables and queues, and faults injected in the SDK. |
 | `cmd/http` `cmd/worker` `cmd/dlq` | Composition root. JSON `slog` on stdout. |
 | `packages/infra-iac` | CDK. HTTP API with IAM authorizer except `/health`, three Lambdas, SQS with its DLQ, DynamoDB, logs, dashboard, alarms. |
 | `packages/loadtest` | k6 at `LOADTEST_RATE` req/s (default 100 locally) on `POST /evaluations/batch` for 10 s, 8 VUs on Floci. Local gate is p95 under 2 s and under 1% errors. p99 under 800 ms is the real-AWS NFR. The 1000 req/s NFR run (10k requests) is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack. |
@@ -104,7 +100,7 @@ HTTP Lambda and fails the synth on a value outside 1..1000. A bad value also
 fails the Lambda at startup. `scripts/floci.env` defaults `BATCH_SIZE` to 100.
 `BATCH_SIZE=1000 make local-deploy` raises the cap.
 
-Then `submit`:
+Then `batch.Submit`:
 
 1. Creates a `batch_id`.
 2. Stores `META` (`size=N`) and one `ITEM#<index>` per customer
@@ -116,7 +112,7 @@ Then `submit`:
 3. Publishes one message per item, `{batch_id, index, attempt, customer}`,
    with `SendMessageBatch`, 10 messages per call, 10 calls in flight. The
    publisher returns the indexes that failed.
-4. Calls `BatchStore.Fail(batch_id, index, 1)` for exactly the indexes whose
+4. Calls `Items.Fail(batch_id, index, 1)` for exactly the indexes whose
    publish failed, so no item stays `QUEUED` with no message behind it.
 5. Returns `202 {"batch_id","queued"}`, where `queued` counts the published
    items. A batch with failed publishes shows `NEEDS_ATTENTION` once the rest
@@ -133,19 +129,20 @@ publish costs one `Fail` per item.
 
 ### Batch item status
 
-The worker evaluates the message and calls
-`BatchStore.Decide(batch_id, index, attempt, result)`. One conditional
+The worker hands the message to `batch.Process`, which evaluates the attempt and calls
+`Items.Decide(batch_id, index, attempt, result)`. One conditional
 `UpdateItem` moves the item from `QUEUED` to `DECIDED` and stores the result.
 The update applies only if the item is `QUEUED` on the same attempt. A repeated delivery fails that condition and
-returns `ErrInvalidTransition`. The worker treats that as success. The item
+returns `ErrInvalidTransition`. `Process` treats that as success. The item
 is decided once and the total is not inflated.
 
 Every transition is one `UpdateItem` on the item's own `ITEM#` row,
 conditional on its current status and on attempt where that applies. No
 transition writes `META` or any other shared row. Workers that decide items of
 one batch in parallel therefore never write the same row. Two operators, or an operator and a late
-delivery, cannot both win a transition. The memory store checks the same
-conditions under a lock.
+delivery, cannot both win a transition. These conditions are the only copy of
+the item status rules: there is no in-memory store, and tests run against
+Floci ([ADR 0002](adr/0002-keep-aws-behind-adapters-with-one-implementation.md)).
 
 ```mermaid
 stateDiagram-v2
@@ -161,16 +158,16 @@ stateDiagram-v2
 
 | Transition | Called by | Condition | Update |
 |---|---|---|---|
-| `Decide(batch_id, index, attempt, result)` | worker | `QUEUED` on `attempt` | `status=DECIDED`, `result` |
-| `Fail(batch_id, index, attempt)` | DLQ consumer, `submit` and `recovery` after a failed publish | `QUEUED` on `attempt` | `status=FAILED` |
-| `Retry(batch_id, index, attempt)` | `recovery` | `FAILED` on `attempt`, `attempts < 5` | `status=QUEUED`, `attempts+1` |
-| `Cancel(batch_id, index)` | `recovery` | `FAILED`. Cancelling a `CANCELLED` item succeeds with no change | `status=CANCELLED` |
+| `Decide(batch_id, index, attempt, result)` | `batch.Process` (worker) | `QUEUED` on `attempt` | `status=DECIDED`, `result` |
+| `Fail(batch_id, index, attempt)` | `batch.DeadLetter` (DLQ consumer), and `batch` after a failed publish | `QUEUED` on `attempt` | `status=FAILED` |
+| `Retry(batch_id, index, attempt)` | `batch.Retry`, `batch.RetryFailed` | `FAILED` on `attempt`, `attempts < 5` | `status=QUEUED`, `attempts+1` |
+| `Cancel(batch_id, index)` | `batch.Cancel` | `FAILED`. Cancelling a `CANCELLED` item succeeds with no change | `status=CANCELLED` |
 
 A retry's message carries the new attempt. A late message for an older attempt
 fails the `Decide` condition, so only the current attempt can decide the item.
 A failed item keeps its attempts, so the report shows how many passes it took.
 
-`BatchStore.Report` counts the items by status on every read (`queued`,
+`batch.Report` reads every item with `Items.All` and counts them by status on every read (`queued`,
 `decided`, `failed`, `cancelled`). The batch status comes from those counters.
 Neither is stored:
 
@@ -193,7 +190,7 @@ has `ReportBatchItemFailures`, so SQS redelivers only the failed records.
 
 `EvaluationJobs` sends a record to `EvaluationJobsDLQ` (14-day retention)
 after `maxReceiveCount=3` receives. The `DlqConsumer` Lambda calls
-`BatchStore.Fail(batch_id, index, attempt)` for each record, which makes the
+`batch.DeadLetter` for each record, which calls `Items.Fail(batch_id, index, attempt)`, which makes the
 item `FAILED` and the batch `NEEDS_ATTENTION`. The DLQ is a signal, not a
 recovery path. Nothing redrives the DLQ
 ([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)).
@@ -236,8 +233,10 @@ with `message_id`, `error`, and `batch_id` and `index` when the body parsed.
 They never log the body or customer fields.
 
 Each recorded decision writes one CloudWatch Embedded Metric Format line in
-namespace `CreditCardEngine`. A batch item writes it only when
-`BatchStore.Decide` succeeds, so a redelivered message is not counted twice.
+namespace `CreditCardEngine`, through the modules' `Emitter` port. A batch
+item writes it only when `Items.Decide` succeeds, so a redelivered message is
+not counted twice. A single evaluation writes it only after the decision is
+recorded.
 
 | Metric | When | Dimensions |
 |---|---|---|
@@ -245,7 +244,7 @@ namespace `CreditCardEngine`. A batch item writes it only when
 | `Denied` | decision is denied | none |
 | `DenyByReason` | decision is denied | `reason` |
 | `DecisionLatencyMs` | every recorded decision | none |
-| `ItemsFailed` | `BatchStore.Fail` moved the item to `FAILED` (DLQ consumer or a failed publish) | none |
+| `ItemsFailed` | `batch` moved the item to `FAILED` (DLQ consumer or a failed publish) | none |
 
 Decision line properties: `decision`, `reason`, `latency_ms`, `cpf_masked`,
 and either `decision_id` (sync) or `batch_id` and `index` (batch). Failed-item
@@ -276,10 +275,11 @@ the audit record. Every API response masks the CPF (`***` + last 2 digits).
 
 ## Packages
 
-The same DAG that `architecture_test.go` locks. `domain` does not import AWS.
-A new rule is a `Handler` plus one `SetNext` in the factory. A new amount
-calculation is an `AmountPolicy` set in the same factory. Use cases and
-adapters stay the same.
+The same DAG that `architecture_test.go` locks. `domain`, `rules`, `evaluate`,
+and `batch` do not import AWS. The modules declare their ports, and the
+adapters implement them.
+A new rule is a constructor that returns a `Rule`, added to the list in
+`rules.NewPolicy()`. The modules and adapters stay the same.
 
 ```mermaid
 flowchart TB
@@ -289,38 +289,26 @@ flowchart TB
   http --> tel["adapter/telemetry"]
   worker["cmd/worker"] --> sqs["adapter/sqs"]
   worker --> ddbA
-  dlqCmd["cmd/dlq"] --> dlqA["adapter/dlq"]
+  worker --> tel
+  dlqCmd["cmd/dlq"] --> sqs
   dlqCmd --> ddbA
   dlqCmd --> tel
-  dlqA --> markfailed
-  markfailed --> queue
-  markfailed --> store
   httpapi --> evaluate
-  httpapi --> submit
-  httpapi --> report
-  httpapi --> recovery
-  httpapi --> store
-  httpapi --> tel
-  recovery --> queue
-  recovery --> store
-  submit --> queue["queue"]
-  submit --> store
-  report --> store
-  sqs --> job["processjob"]
-  sqs --> tel
-  job --> evaluate
-  job --> queue
-  job --> store
-  evaluate["evaluate"] --> chain["rules"]
-  chain --> domain["domain"]
-  store --> domain
-  queue --> domain
+  httpapi --> batch
+  sqs --> batch
+  ddbA --> batch
+  ddbA --> evaluate
+  pub --> batch
+  tel --> domain
+  evaluate["evaluate"] --> rules["rules"]
+  batch["batch"] --> rules
+  rules --> domain["domain"]
 ```
 
 ## Validation
 
 The HTTP adapter validates every customer with `domain.Customer.Validate()`
-before it calls a use case. Validation does no I/O and returns every
+before it calls `evaluate` or `batch`. Validation does no I/O and returns every
 violation as `{field, code}`. An invalid customer is never evaluated and gets
 no decision.
 
@@ -334,7 +322,7 @@ no decision.
 | `monthly_spend_cents[i]` | `negative` | entry `i` is below zero |
 
 The CPF is normalized to 11 bare digits (`390.533.447-05` → `39053344705`)
-before it reaches a use case.
+before it reaches `evaluate` or `batch`.
 
 `POST /evaluations` returns `400 {"error":"invalid_json"}` for malformed JSON
 and `422 {"error":"invalid_customer","violations":[...]}` for an invalid
@@ -398,21 +386,21 @@ Criteria are documented here. This is not a real bureau.
    `insufficient_spend_history` because there is no evidence to size the
    risk.
 
-Change a cutoff by editing a field on the rule struct or a band. Change the
-policy with a new file plus one `SetNext` (or a new `AmountPolicy`) in
-`rules.NewPolicy()`.
+Change a cutoff by editing its argument or a band in `rules.NewPolicy()`.
+Change the policy with a new rule constructor in its own file plus one entry
+in that list.
 
 ## Evaluation criteria
 
 | Criterion | How the design answers |
 |---|---|
 | Latency ≤ 1 s | Sync engine, no I/O on the sync path. Lambda timeout 3 s, 256 MB, arm64. p99 alarmed at 800 ms. |
-| Accuracy | Customers validated at the edge (CPF check digits, no negatives). Deterministic rules. Table tests in `domain`, `rules`, and `evaluate`. Stable reason code per rule. |
+| Accuracy | Customers validated at the edge (CPF check digits, no negatives). Deterministic rules. Table tests in `domain` and `rules`. Stable reason code per rule. |
 | Scale 10k/min | NFR floor. The cut demonstrates 1000 req/s on batch. HTTP enqueues (202), the worker processes batch 10, DynamoDB is on-demand. Stage at 1200 rps / 2400 burst. The 1000 req/s NFR run is `LOADTEST_RATE=1000 make loadtest` against real AWS, 1000/s × 10 s = 10k requests (local default 100 req/s). |
-| Extensibility | `rules.Handler` + `rules.AmountPolicy`, assembled in `rules.NewPolicy()`. `architecture_test.go` keeps domain off AWS. |
+| Extensibility | Ordered `rules.Rule` list and score bands, assembled in `rules.NewPolicy()`. `architecture_test.go` keeps domain, rules, and the modules off AWS. |
 | LGPD | CPF masked on `Result` and in logs. Encryption at rest managed. IAM authorizer on every HTTP route except `/health`. Full CPF and name stay in DynamoDB and SQS. |
 | Observability | 14-day logs. One EMF line per decision (`Approved`/`Denied`, `DenyByReason`, `DecisionLatencyMs`) and per failed item (`ItemsFailed`). Dashboard `CreditCardEngine`. Alarms on API 5xx, worker errors, DLQ consumer errors, DLQ depth, and HTTP p99 > 800 ms. |
-| Resilience | `evaluate` has no I/O. The store writes after the decision, and the sync path fails closed with `503`. On batch, SQS isolates HTTP from the worker. The worker reports partial batch failures, a record that fails 3 receives goes to the DLQ, and the DLQ consumer marks its item `FAILED` for an operator to retry or cancel. A failed publish marks the item `FAILED`, never leaves it `QUEUED`. Every transition is conditional. On-demand table. 5xx alarm on the sync path. |
+| Resilience | `rules` has no I/O. `evaluate` records after the decision, and the sync path fails closed with `503`. On batch, SQS isolates HTTP from the worker. The worker reports partial batch failures, a record that fails 3 receives goes to the DLQ, and the DLQ consumer marks its item `FAILED` for an operator to retry or cancel. A failed publish marks the item `FAILED`, never leaves it `QUEUED`. Every transition is conditional. On-demand table. 5xx alarm on the sync path. |
 
 ## API
 

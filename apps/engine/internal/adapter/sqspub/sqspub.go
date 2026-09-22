@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
-	"engine/internal/queue"
+	"engine/internal/batch"
 )
 
 const (
@@ -31,9 +31,9 @@ func New(cfg aws.Config, queueURL string) *Publisher {
 	return &Publisher{client: sqs.NewFromConfig(cfg), url: queueURL}
 }
 
-// Publish sends the jobs in chunks of 10, several chunks at once. A chunk that
-// fails as a whole fails every job in it.
-func (p *Publisher) Publish(ctx context.Context, jobs []queue.Job) ([]int, error) {
+// Publish sends the attempts in chunks of 10, several chunks at once. A chunk that
+// fails as a whole fails every attempt in it.
+func (p *Publisher) Publish(ctx context.Context, attempts []batch.Attempt) ([]int, error) {
 	var (
 		mu     sync.Mutex
 		failed []int
@@ -41,8 +41,8 @@ func (p *Publisher) Publish(ctx context.Context, jobs []queue.Job) ([]int, error
 		wg     sync.WaitGroup
 	)
 	sem := make(chan struct{}, inFlight)
-	for start := 0; start < len(jobs); start += chunkSize {
-		chunk := jobs[start:min(start+chunkSize, len(jobs))]
+	for start := 0; start < len(attempts); start += chunkSize {
+		chunk := attempts[start:min(start+chunkSize, len(attempts))]
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
@@ -61,16 +61,16 @@ func (p *Publisher) Publish(ctx context.Context, jobs []queue.Job) ([]int, error
 	return failed, errors.Join(errs...)
 }
 
-func (p *Publisher) send(ctx context.Context, chunk []queue.Job) ([]int, error) {
+func (p *Publisher) send(ctx context.Context, chunk []batch.Attempt) ([]int, error) {
 	trace := traceHeader()
 	entries := make([]types.SendMessageBatchRequestEntry, 0, len(chunk))
-	for _, job := range chunk {
-		body, err := json.Marshal(job)
+	for _, a := range chunk {
+		body, err := json.Marshal(a)
 		if err != nil {
 			return indexes(chunk), err
 		}
 		entries = append(entries, types.SendMessageBatchRequestEntry{
-			Id:                      new(strconv.Itoa(job.Index)),
+			Id:                      new(strconv.Itoa(a.Index)),
 			MessageBody:             new(string(body)),
 			MessageSystemAttributes: trace,
 		})
@@ -96,10 +96,10 @@ func (p *Publisher) send(ctx context.Context, chunk []queue.Job) ([]int, error) 
 	return failed, fmt.Errorf("send message batch: %d entries failed, first code %s", len(out.Failed), aws.ToString(out.Failed[0].Code))
 }
 
-func indexes(jobs []queue.Job) []int {
-	out := make([]int, len(jobs))
-	for i, j := range jobs {
-		out[i] = j.Index
+func indexes(attempts []batch.Attempt) []int {
+	out := make([]int, len(attempts))
+	for i, a := range attempts {
+		out[i] = a.Index
 	}
 	return out
 }

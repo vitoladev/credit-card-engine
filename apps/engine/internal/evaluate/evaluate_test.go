@@ -1,64 +1,79 @@
 package evaluate_test
 
 import (
+	"errors"
 	"testing"
+	"time"
 
+	"engine/internal/adapter/ddb"
 	"engine/internal/domain"
 	"engine/internal/evaluate"
+	"engine/internal/flocitest"
 	"engine/internal/rules"
 )
 
-func TestExecuteTable(t *testing.T) {
-	uc := evaluate.New(rules.NewPolicy())
-	good := domain.Customer{
-		Name: "Ana", CPF: "39053344705", CreditScore: 720,
-		CurrentInvoiceCents: 80_000, CreditLimitCents: 500_000,
-		LatePayments: 0, MonthlySpendCents: []int64{100_000, 110_000, 90_000},
+var ana = domain.Customer{
+	Name: "Ana", CPF: "39053344705", CreditScore: 720,
+	CurrentInvoiceCents: 80_000, CreditLimitCents: 500_000,
+	MonthlySpendCents: []int64{100_000, 110_000, 90_000},
+}
+
+type evaluated struct {
+	decisionID string
+	result     domain.Result
+}
+
+type recorder struct{ events []evaluated }
+
+func (r *recorder) Evaluated(decisionID string, res domain.Result, _ time.Duration) {
+	r.events = append(r.events, evaluated{decisionID: decisionID, result: res})
+}
+
+func newModule(t *testing.T) (evaluate.Module, *flocitest.Faults, *recorder, func() int) {
+	t.Helper()
+	cfg, faults := flocitest.Config(t)
+	table := flocitest.Table(t, cfg)
+	rec := &recorder{}
+	rows := func() int { return flocitest.Rows(t, cfg, table) }
+	return evaluate.New(rules.NewPolicy(), ddb.New(cfg, table), rec), faults, rec, rows
+}
+
+func TestEvaluateRecordsTheDecisionBeforeReturningIt(t *testing.T) {
+	m, _, rec, _ := newModule(t)
+	id, got, err := m.Evaluate(t.Context(), ana)
+	if err != nil {
+		t.Fatal(err)
 	}
-	cases := []struct {
-		name     string
-		mutate   func(*domain.Customer)
-		decision domain.Decision
-		reason   string
-	}{
-		{name: "approved", mutate: func(*domain.Customer) {}, decision: domain.Approved, reason: "eligible"},
-		{name: "low score", mutate: func(c *domain.Customer) { c.CreditScore = 500 }, decision: domain.Denied, reason: "score_below_600"},
-		{name: "lates", mutate: func(c *domain.Customer) { c.LatePayments = 4 }, decision: domain.Denied, reason: "late_payments_above_2"},
-		{name: "invoice", mutate: func(c *domain.Customer) { c.CurrentInvoiceCents = 600_000 }, decision: domain.Denied, reason: "invoice_exceeds_credit_limit"},
-		{name: "empty spend history", mutate: func(c *domain.Customer) { c.MonthlySpendCents = nil }, decision: domain.Denied, reason: "insufficient_spend_history"},
+	if id == "" || got.Decision != domain.Approved || got.CPFMasked != "***05" || got.RevolvingAmountCents != 250_000 {
+		t.Fatalf("id=%q result=%+v", id, got)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			c := good
-			tc.mutate(&c)
-			got := uc.Execute(t.Context(), c)
-			if got.Decision != tc.decision {
-				t.Fatalf("decision=%s want %s reasons=%v", got.Decision, tc.decision, got.Reasons)
-			}
-			if len(got.Reasons) == 0 || got.Reasons[0] != tc.reason {
-				t.Fatalf("reasons=%v want %s", got.Reasons, tc.reason)
-			}
-			if got.Decision == domain.Approved && got.RevolvingAmountCents <= 0 {
-				t.Fatal("approved with zero amount")
-			}
-			if got.Decision == domain.Denied && got.RevolvingAmountCents != 0 {
-				t.Fatalf("denied with amount %d", got.RevolvingAmountCents)
-			}
-			if got.CPFMasked == c.CPF {
-				t.Fatal("result leaked raw CPF")
-			}
-		})
+	stored, err := m.Get(t.Context(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Decision != got.Decision || stored.RevolvingAmountCents != got.RevolvingAmountCents || stored.Reasons[0] != "eligible" {
+		t.Fatalf("stored=%+v", stored)
+	}
+	if len(rec.events) != 1 || rec.events[0].decisionID != id || rec.events[0].result.Decision != domain.Approved {
+		t.Fatalf("events=%+v", rec.events)
 	}
 }
 
-func TestAmountUsesScoreBand(t *testing.T) {
-	uc := evaluate.New(rules.NewPolicy())
-	got := uc.Execute(t.Context(), domain.Customer{
-		Name: "Boa", CPF: "12345678909", CreditScore: 820,
-		CurrentInvoiceCents: 100_000, CreditLimitCents: 1_000_000,
-		MonthlySpendCents: []int64{100_000},
-	})
-	if got.RevolvingAmountCents != 800_000 {
-		t.Fatalf("amount=%d", got.RevolvingAmountCents)
+func TestEvaluateFailsClosed(t *testing.T) {
+	m, faults, rec, rows := newModule(t)
+	faults.FailCalls("PutItem", 1)
+	id, got, err := m.Evaluate(t.Context(), ana)
+	if !errors.Is(err, evaluate.ErrNotRecorded) || id != "" || got.Decision != "" {
+		t.Fatalf("id=%q result=%+v err=%v", id, got, err)
+	}
+	if n := rows(); n != 0 || len(rec.events) != 0 {
+		t.Fatalf("rows=%d events=%+v", n, rec.events)
+	}
+}
+
+func TestGetUnknownDecisionIsNotFound(t *testing.T) {
+	m, _, _, _ := newModule(t)
+	if _, err := m.Get(t.Context(), "nope"); !errors.Is(err, evaluate.ErrNotFound) {
+		t.Fatalf("err=%v", err)
 	}
 }

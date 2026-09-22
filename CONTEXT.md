@@ -82,7 +82,9 @@ item can be retried or cancelled.
 
 **Attempt**:
 One pass of a batch item through evaluation, the first one or an operator
-retry. A batch item gets at most 5 attempts.
+retry. A batch item gets at most 5 attempts. Each attempt travels as one
+queue message.
+_Avoid_: Job
 
 **Batch status**:
 Derived from its items: processing while any item is queued, needs attention

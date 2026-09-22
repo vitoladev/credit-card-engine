@@ -1,105 +1,51 @@
 package ddb_test
 
 import (
-	"context"
 	"errors"
-	"os"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
-	"uuid"
-
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
-	"github.com/aws/smithy-go/middleware"
 
 	"engine/internal/adapter/ddb"
+	"engine/internal/batch"
 	"engine/internal/domain"
-	"engine/internal/store"
+	"engine/internal/evaluate"
+	"engine/internal/flocitest"
 )
 
-// These tests need a DynamoDB endpoint (Floci), e.g.
-// AWS_TEST_ENDPOINT=http://localhost:4566 go test ./internal/adapter/ddb/
-func newStore(t *testing.T) *ddb.Store {
-	return newStoreWith(t, nil)
+func newStore(t *testing.T) (*ddb.Store, *flocitest.Faults) {
+	t.Helper()
+	cfg, faults := flocitest.Config(t)
+	return ddb.New(cfg, flocitest.Table(t, cfg)), faults
 }
 
-func newStoreFailingPutsAfter(t *testing.T, succeed int32) *ddb.Store {
-	t.Helper()
-	var n atomic.Int32
-	return newStoreWith(t, func(cfg *aws.Config) {
-		cfg.APIOptions = append(cfg.APIOptions, func(stack *middleware.Stack) error {
-			return stack.Initialize.Add(middleware.InitializeMiddlewareFunc("failPuts", func(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (middleware.InitializeOutput, middleware.Metadata, error) {
-				input, ok := in.Parameters.(*dynamodb.BatchWriteItemInput)
-				if !ok {
-					return next.HandleInitialize(ctx, in)
-				}
-				puts := 0
-				for _, reqs := range input.RequestItems {
-					for _, r := range reqs {
-						if r.PutRequest != nil {
-							puts++
-						}
-					}
-				}
-				if puts == 0 {
-					return next.HandleInitialize(ctx, in)
-				}
-				if n.Add(1) > succeed {
-					return middleware.InitializeOutput{}, middleware.Metadata{}, errors.New("injected put failure")
-				}
-				return next.HandleInitialize(ctx, in)
-			}), middleware.After)
-		})
-	})
-}
+type counters struct{ queued, decided, failed, cancelled int }
 
-func newStoreWith(t *testing.T, opt func(*aws.Config)) *ddb.Store {
+// all reads every item of the batch and tallies them by status.
+func all(t *testing.T, st *ddb.Store, batchID string) ([]batch.Item, counters) {
 	t.Helper()
-	endpoint := os.Getenv("AWS_TEST_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("AWS_TEST_ENDPOINT not set")
-	}
-	cfg, err := config.LoadDefaultConfig(t.Context(),
-		config.WithRegion("us-east-1"),
-		config.WithBaseEndpoint(endpoint),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
-	)
+	items, err := st.All(t.Context(), batchID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opt != nil {
-		opt(&cfg)
+	var c counters
+	for _, it := range items {
+		switch it.Status {
+		case batch.Queued:
+			c.queued++
+		case batch.Decided:
+			c.decided++
+		case batch.Failed:
+			c.failed++
+		case batch.Cancelled:
+			c.cancelled++
+		}
 	}
-	client := dynamodb.NewFromConfig(cfg)
-	table := "ddb-test-" + uuid.New().String()
-	_, err = client.CreateTable(t.Context(), &dynamodb.CreateTableInput{
-		TableName:   new(table),
-		BillingMode: types.BillingModePayPerRequest,
-		AttributeDefinitions: []types.AttributeDefinition{
-			{AttributeName: new("pk"), AttributeType: types.ScalarAttributeTypeS},
-			{AttributeName: new("sk"), AttributeType: types.ScalarAttributeTypeS},
-		},
-		KeySchema: []types.KeySchemaElement{
-			{AttributeName: new("pk"), KeyType: types.KeyTypeHash},
-			{AttributeName: new("sk"), KeyType: types.KeyTypeRange},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = client.DeleteTable(context.Background(), &dynamodb.DeleteTableInput{TableName: new(table)})
-	})
-	return ddb.New(cfg, table)
+	return items, c
 }
 
 func TestDecisionRoundTrip(t *testing.T) {
-	st := newStore(t)
+	st, _ := newStore(t)
 	r := domain.Result{Name: "Ana", CPFMasked: "***05", Decision: domain.Approved, RevolvingAmountCents: 250_000, Reasons: []string{"eligible"}}
 	if err := st.Save(t.Context(), "d1", domain.Customer{Name: "Ana", CPF: "39053344705"}, r); err != nil {
 		t.Fatal(err)
@@ -111,13 +57,13 @@ func TestDecisionRoundTrip(t *testing.T) {
 	if got.Decision != r.Decision || got.RevolvingAmountCents != r.RevolvingAmountCents || got.CPFMasked != r.CPFMasked {
 		t.Fatalf("%+v", got)
 	}
-	if _, err := st.Get(t.Context(), "missing"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.Get(t.Context(), "missing"); !errors.Is(err, evaluate.ErrNotFound) {
 		t.Fatalf("err=%v", err)
 	}
 }
 
 func TestBatchTransitions(t *testing.T) {
-	st := newStore(t)
+	st, _ := newStore(t)
 	// 1000 items of ~2 KB push the Query past one 1 MB page, and the write
 	// past one BatchWriteItem chunk.
 	customers := make([]domain.Customer, 1000)
@@ -127,15 +73,12 @@ func TestBatchTransitions(t *testing.T) {
 	if err := st.Create(t.Context(), "b1", customers); err != nil {
 		t.Fatal(err)
 	}
-	b, err := st.Report(t.Context(), "b1")
-	if err != nil {
-		t.Fatal(err)
+	items, c := all(t, st, "b1")
+	if c != (counters{queued: 1000}) || len(items) != 1000 {
+		t.Fatalf("counters=%+v items=%d", c, len(items))
 	}
-	if b.Counters != (store.Counters{Queued: 1000}) || len(b.Items) != 1000 {
-		t.Fatalf("counters=%+v items=%d", b.Counters, len(b.Items))
-	}
-	for i, it := range b.Items {
-		if it.Index != i || it.Status != store.Queued || it.Attempts != 1 || it.Customer.CPF != "39053344705" {
+	for i, it := range items {
+		if it.Index != i || it.Status != batch.Queued || it.Attempts != 1 || it.Customer.CPF != "39053344705" {
 			t.Fatalf("item %d: index=%d status=%s attempts=%d", i, it.Index, it.Status, it.Attempts)
 		}
 	}
@@ -144,33 +87,30 @@ func TestBatchTransitions(t *testing.T) {
 	if err := st.Decide(t.Context(), "b1", 7, 1, r); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Decide(t.Context(), "b1", 7, 1, r); !errors.Is(err, store.ErrInvalidTransition) {
+	if err := st.Decide(t.Context(), "b1", 7, 1, r); !errors.Is(err, batch.ErrInvalidTransition) {
 		t.Fatalf("repeat decide err=%v", err)
 	}
-	if err := st.Decide(t.Context(), "b1", 8, 2, r); !errors.Is(err, store.ErrInvalidTransition) {
+	if err := st.Decide(t.Context(), "b1", 8, 2, r); !errors.Is(err, batch.ErrInvalidTransition) {
 		t.Fatalf("wrong attempt err=%v", err)
 	}
-	if err := st.Decide(t.Context(), "b1", 5000, 1, r); !errors.Is(err, store.ErrNotFound) {
+	if err := st.Decide(t.Context(), "b1", 5000, 1, r); !errors.Is(err, batch.ErrNotFound) {
 		t.Fatalf("missing item err=%v", err)
 	}
 
-	b, err = st.Report(t.Context(), "b1")
-	if err != nil {
-		t.Fatal(err)
+	items, c = all(t, st, "b1")
+	if c != (counters{queued: 999, decided: 1}) {
+		t.Fatalf("counters=%+v", c)
 	}
-	if b.Counters != (store.Counters{Queued: 999, Decided: 1}) {
-		t.Fatalf("counters=%+v", b.Counters)
-	}
-	if it := b.Items[7]; it.Status != store.Decided || it.Result.RevolvingAmountCents != 100 {
+	if it := items[7]; it.Status != batch.Decided || it.Result.RevolvingAmountCents != 100 {
 		t.Fatalf("%+v", it.Status)
 	}
-	if _, err := st.Report(t.Context(), "missing"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.All(t.Context(), "missing"); !errors.Is(err, batch.ErrNotFound) {
 		t.Fatalf("err=%v", err)
 	}
 }
 
 func TestFailRetryCancelTransitions(t *testing.T) {
-	st := newStore(t)
+	st, _ := newStore(t)
 	ctx := t.Context()
 	customers := []domain.Customer{{Name: "Ana", CPF: "39053344705"}, {Name: "Bruno", CPF: "12345678909"}, {Name: "Carla", CPF: "98765432100"}}
 	if err := st.Create(ctx, "b1", customers); err != nil {
@@ -182,64 +122,60 @@ func TestFailRetryCancelTransitions(t *testing.T) {
 			t.Fatalf("%s: err=%v want %v", name, err, want)
 		}
 	}
-	wantCounters := func(want store.Counters) {
+	wantCounters := func(want counters) {
 		t.Helper()
-		b, err := st.Report(ctx, "b1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if b.Counters != want {
-			t.Fatalf("counters=%+v want %+v", b.Counters, want)
+		if _, c := all(t, st, "b1"); c != want {
+			t.Fatalf("counters=%+v want %+v", c, want)
 		}
 	}
 
-	wantErr("fail wrong attempt", st.Fail(ctx, "b1", 0, 2), store.ErrInvalidTransition)
-	wantErr("fail missing", st.Fail(ctx, "b1", 9, 1), store.ErrNotFound)
+	wantErr("fail wrong attempt", st.Fail(ctx, "b1", 0, 2), batch.ErrInvalidTransition)
+	wantErr("fail missing", st.Fail(ctx, "b1", 9, 1), batch.ErrNotFound)
 	wantErr("fail 0", st.Fail(ctx, "b1", 0, 1), nil)
-	wantErr("fail 0 again", st.Fail(ctx, "b1", 0, 1), store.ErrInvalidTransition)
+	wantErr("fail 0 again", st.Fail(ctx, "b1", 0, 1), batch.ErrInvalidTransition)
 	wantErr("fail 1", st.Fail(ctx, "b1", 1, 1), nil)
-	wantErr("decide failed item", st.Decide(ctx, "b1", 0, 1, domain.Result{}), store.ErrInvalidTransition)
-	wantCounters(store.Counters{Queued: 1, Failed: 2})
+	wantErr("decide failed item", st.Decide(ctx, "b1", 0, 1, domain.Result{}), batch.ErrInvalidTransition)
+	wantCounters(counters{queued: 1, failed: 2})
 
 	failed, err := st.Failed(ctx, "b1")
 	if err != nil || len(failed) != 2 || failed[0].Index != 0 || failed[1].Index != 1 || failed[1].Customer.CPF != "12345678909" {
 		t.Fatalf("failed=%+v err=%v", failed, err)
 	}
-	if _, err := st.Failed(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.Failed(ctx, "missing"); !errors.Is(err, batch.ErrNotFound) {
 		t.Fatalf("failed of missing batch: err=%v", err)
 	}
 
 	// Two operators retry the same attempt: only one wins.
 	wantErr("retry 0", st.Retry(ctx, "b1", 0, 1), nil)
-	wantErr("retry 0 again", st.Retry(ctx, "b1", 0, 1), store.ErrInvalidTransition)
-	wantErr("retry queued", st.Retry(ctx, "b1", 2, 1), store.ErrInvalidTransition)
-	wantErr("retry missing", st.Retry(ctx, "b1", 9, 1), store.ErrNotFound)
+	wantErr("retry 0 again", st.Retry(ctx, "b1", 0, 1), batch.ErrInvalidTransition)
+	wantErr("retry queued", st.Retry(ctx, "b1", 2, 1), batch.ErrInvalidTransition)
+	wantErr("retry missing", st.Retry(ctx, "b1", 9, 1), batch.ErrNotFound)
 	it, err := st.Item(ctx, "b1", 0)
-	if err != nil || it.Status != store.Queued || it.Attempts != 2 || it.Customer.Name != "Ana" {
+	if err != nil || it.Status != batch.Queued || it.Attempts != 2 || it.Customer.Name != "Ana" {
 		t.Fatalf("item=%+v err=%v", it, err)
 	}
-	if _, err := st.Item(ctx, "b1", 9); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.Item(ctx, "b1", 9); !errors.Is(err, batch.ErrNotFound) {
 		t.Fatalf("item missing: err=%v", err)
 	}
-	wantCounters(store.Counters{Queued: 2, Failed: 1})
+	wantCounters(counters{queued: 2, failed: 1})
 
-	for attempt := 2; attempt < store.MaxAttempts; attempt++ {
+	for attempt := 2; attempt < batch.MaxAttempts; attempt++ {
 		wantErr("fail", st.Fail(ctx, "b1", 0, attempt), nil)
 		wantErr("retry", st.Retry(ctx, "b1", 0, attempt), nil)
 	}
-	wantErr("fail at max", st.Fail(ctx, "b1", 0, store.MaxAttempts), nil)
-	wantErr("retry at max", st.Retry(ctx, "b1", 0, store.MaxAttempts), store.ErrMaxAttempts)
+	wantErr("fail at max", st.Fail(ctx, "b1", 0, batch.MaxAttempts), nil)
+	wantErr("retry at max", st.Retry(ctx, "b1", 0, batch.MaxAttempts), batch.ErrMaxAttempts)
 
 	wantErr("cancel 1", st.Cancel(ctx, "b1", 1), nil)
 	wantErr("cancel 1 again", st.Cancel(ctx, "b1", 1), nil)
-	wantErr("cancel queued", st.Cancel(ctx, "b1", 2), store.ErrInvalidTransition)
-	wantErr("cancel missing", st.Cancel(ctx, "b1", 9), store.ErrNotFound)
-	wantErr("retry cancelled", st.Retry(ctx, "b1", 1, 1), store.ErrInvalidTransition)
-	wantCounters(store.Counters{Queued: 1, Failed: 1, Cancelled: 1})
+	wantErr("cancel queued", st.Cancel(ctx, "b1", 2), batch.ErrInvalidTransition)
+	wantErr("cancel missing", st.Cancel(ctx, "b1", 9), batch.ErrNotFound)
+	wantErr("retry cancelled", st.Retry(ctx, "b1", 1, 1), batch.ErrInvalidTransition)
+	wantCounters(counters{queued: 1, failed: 1, cancelled: 1})
 }
 
 func TestRetryManyMovesFailedItems(t *testing.T) {
-	st := newStore(t)
+	st, _ := newStore(t)
 	ctx := t.Context()
 	customers := []domain.Customer{{Name: "Ana", CPF: "39053344705"}, {Name: "Bruno", CPF: "12345678909"}, {Name: "Carla", CPF: "98765432100"}}
 	if err := st.Create(ctx, "b1", customers); err != nil {
@@ -255,27 +191,24 @@ func TestRetryManyMovesFailedItems(t *testing.T) {
 	if err != nil || len(failed) != 2 {
 		t.Fatalf("failed=%+v err=%v", failed, err)
 	}
-	queued, err := st.RetryMany(ctx, "b1", append(failed, store.Item{Index: 2, Attempts: 1}))
+	queued, err := st.RetryMany(ctx, "b1", append(failed, batch.Item{Index: 2, Attempts: 1}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(queued) != 2 || queued[0].Index != 0 || queued[1].Index != 1 {
 		t.Fatalf("queued=%+v", queued)
 	}
-	b, err := st.Report(ctx, "b1")
-	if err != nil {
-		t.Fatal(err)
+	items, c := all(t, st, "b1")
+	if c != (counters{queued: 3}) {
+		t.Fatalf("counters=%+v", c)
 	}
-	if b.Counters != (store.Counters{Queued: 3}) {
-		t.Fatalf("counters=%+v", b.Counters)
-	}
-	if b.Items[0].Attempts != 2 || b.Items[1].Attempts != 2 || b.Items[2].Attempts != 1 {
-		t.Fatalf("attempts=%d,%d,%d", b.Items[0].Attempts, b.Items[1].Attempts, b.Items[2].Attempts)
+	if items[0].Attempts != 2 || items[1].Attempts != 2 || items[2].Attempts != 1 {
+		t.Fatalf("attempts=%d,%d,%d", items[0].Attempts, items[1].Attempts, items[2].Attempts)
 	}
 }
 
 func TestRetryManyMovesManyItems(t *testing.T) {
-	st := newStore(t)
+	st, _ := newStore(t)
 	ctx := t.Context()
 	n := 51
 	customers := make([]domain.Customer, n)
@@ -298,19 +231,15 @@ func TestRetryManyMovesManyItems(t *testing.T) {
 	if err != nil || len(queued) != n {
 		t.Fatalf("queued=%d err=%v", len(queued), err)
 	}
-	b, err := st.Report(ctx, "b1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b.Counters != (store.Counters{Queued: n}) {
-		t.Fatalf("counters=%+v", b.Counters)
+	if _, c := all(t, st, "b1"); c != (counters{queued: n}) {
+		t.Fatalf("counters=%+v", c)
 	}
 }
 
 // Workers decide items of one batch in parallel. Each transition writes only
 // its own item, so none of them conflicts with another.
 func TestConcurrentDecidesOnOneBatch(t *testing.T) {
-	st := newStore(t)
+	st, _ := newStore(t)
 	ctx := t.Context()
 	n := 200
 	customers := make([]domain.Customer, n)
@@ -329,17 +258,14 @@ func TestConcurrentDecidesOnOneBatch(t *testing.T) {
 	if err := errors.Join(errs...); err != nil {
 		t.Fatal(err)
 	}
-	b, err := st.Report(ctx, "b1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if b.Counters != (store.Counters{Decided: n}) {
-		t.Fatalf("counters=%+v", b.Counters)
+	if _, c := all(t, st, "b1"); c != (counters{decided: n}) {
+		t.Fatalf("counters=%+v", c)
 	}
 }
 
 func TestCreateRemovesPartialRowsOnWriteFailure(t *testing.T) {
-	st := newStoreFailingPutsAfter(t, 1)
+	st, faults := newStore(t)
+	faults.FailCalls("BatchWriteItem", 1)
 	customers := make([]domain.Customer, 30)
 	for i := range customers {
 		customers[i] = domain.Customer{Name: "Ana", CPF: "39053344705"}
@@ -347,7 +273,7 @@ func TestCreateRemovesPartialRowsOnWriteFailure(t *testing.T) {
 	if err := st.Create(t.Context(), "b1", customers); err == nil {
 		t.Fatal("expected write failure")
 	}
-	if _, err := st.Report(t.Context(), "b1"); !errors.Is(err, store.ErrNotFound) {
+	if _, err := st.All(t.Context(), "b1"); !errors.Is(err, batch.ErrNotFound) {
 		t.Fatalf("leftover batch: err=%v", err)
 	}
 }

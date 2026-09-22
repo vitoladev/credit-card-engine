@@ -13,11 +13,9 @@ import (
 	"engine/internal/adapter/httpapi"
 	"engine/internal/adapter/sqspub"
 	"engine/internal/adapter/telemetry"
+	"engine/internal/batch"
 	"engine/internal/evaluate"
-	"engine/internal/recovery"
-	"engine/internal/report"
 	"engine/internal/rules"
-	"engine/internal/submit"
 )
 
 func main() {
@@ -35,7 +33,7 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 	if table == "" || queueURL == "" {
 		return httpapi.Handler{}, errors.New("DECISIONS_TABLE and QUEUE_URL required")
 	}
-	batchSize, err := submit.ParseBatchSize(os.Getenv("BATCH_SIZE"))
+	batchSize, err := batch.ParseBatchSize(os.Getenv("BATCH_SIZE"))
 	if err != nil {
 		return httpapi.Handler{}, err
 	}
@@ -44,7 +42,13 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 		return httpapi.Handler{}, err
 	}
 	st := ddb.New(cfg, table)
-	batches := telemetry.Observe(st)
-	pub := sqspub.New(cfg, queueURL)
-	return httpapi.New(evaluate.New(rules.NewPolicy()), st, submit.New(batches, pub, batchSize), report.New(st), recovery.New(batches, pub)), nil
+	policy := rules.NewPolicy()
+	b := batch.New(batch.Deps{
+		Items:        st,
+		Publisher:    sqspub.New(cfg, queueURL),
+		Policy:       policy,
+		Emitter:      telemetry.EMF{},
+		MaxCustomers: batchSize,
+	})
+	return httpapi.New(evaluate.New(policy, st, telemetry.EMF{}), b), nil
 }

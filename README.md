@@ -183,7 +183,7 @@ run is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack.
 ## Layout
 
 ```
-apps/engine/          Use cases, the rule chain, and the http, worker, and dlq commands
+apps/engine/          The evaluate and batch modules, the rules, and the http, worker, and dlq commands
 packages/infra-iac/   CDK in Go
 packages/loadtest/    k6 (batch via SQS, LOADTEST_RATE req/s, default 100)
 docs/                 architecture.md

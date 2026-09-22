@@ -10,9 +10,9 @@ import (
 
 	"engine/internal/adapter/awsconfig"
 	"engine/internal/adapter/ddb"
-	"engine/internal/adapter/dlq"
+	"engine/internal/adapter/sqs"
 	"engine/internal/adapter/telemetry"
-	"engine/internal/markfailed"
+	"engine/internal/batch"
 )
 
 func main() {
@@ -24,14 +24,17 @@ func main() {
 	lambda.Start(h.Handle)
 }
 
-func compose(ctx context.Context) (dlq.Handler, error) {
+func compose(ctx context.Context) (sqs.Consumer, error) {
 	table := os.Getenv("DECISIONS_TABLE")
 	if table == "" {
-		return dlq.Handler{}, errors.New("DECISIONS_TABLE required")
+		return sqs.Consumer{}, errors.New("DECISIONS_TABLE required")
 	}
 	cfg, err := awsconfig.Load(ctx)
 	if err != nil {
-		return dlq.Handler{}, err
+		return sqs.Consumer{}, err
 	}
-	return dlq.New(markfailed.New(telemetry.Observe(ddb.New(cfg, table)))), nil
+	return sqs.DeadLetters(batch.New(batch.Deps{
+		Items:   ddb.New(cfg, table),
+		Emitter: telemetry.EMF{},
+	})), nil
 }

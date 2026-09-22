@@ -1,13 +1,12 @@
-package report
+package batch
 
 import (
 	"context"
 
 	"engine/internal/domain"
-	"engine/internal/store"
 )
 
-// Status is derived from the counters on every read; it is never stored.
+// Status is derived from the items on every read; it is never stored.
 type Status string
 
 const (
@@ -15,6 +14,13 @@ const (
 	NeedsAttention Status = "NEEDS_ATTENTION"
 	Completed      Status = "COMPLETED"
 )
+
+type Counters struct {
+	Queued    int `json:"queued"`
+	Decided   int `json:"decided"`
+	Failed    int `json:"failed"`
+	Cancelled int `json:"cancelled"`
+}
 
 // Entry is one batch item as an operator sees it: masked CPF, never the full one.
 type Entry struct {
@@ -28,41 +34,49 @@ type Entry struct {
 }
 
 type Report struct {
-	BatchID                   string         `json:"batch_id"`
-	Status                    Status         `json:"status"`
-	Counters                  store.Counters `json:"counters"`
-	Approved                  []Entry        `json:"approved"`
-	Denied                    []Entry        `json:"denied"`
-	Failed                    []Entry        `json:"failed"`
-	Cancelled                 []Entry        `json:"cancelled"`
-	TotalRevolvingAmountCents int64          `json:"total_revolving_amount_cents"`
+	BatchID                   string   `json:"batch_id"`
+	Status                    Status   `json:"status"`
+	Counters                  Counters `json:"counters"`
+	Approved                  []Entry  `json:"approved"`
+	Denied                    []Entry  `json:"denied"`
+	Failed                    []Entry  `json:"failed"`
+	Cancelled                 []Entry  `json:"cancelled"`
+	TotalRevolvingAmountCents int64    `json:"total_revolving_amount_cents"`
 }
 
-func From(b store.Batch) Report {
+// Report reads every item of the batch and derives its status and totals.
+func (m Module) Report(ctx context.Context, batchID string) (Report, error) {
+	items, err := m.items.All(ctx, batchID)
+	if err != nil {
+		return Report{}, err
+	}
 	r := Report{
-		BatchID:   b.ID,
-		Status:    statusOf(b.Counters),
-		Counters:  b.Counters,
+		BatchID:   batchID,
 		Approved:  []Entry{},
 		Denied:    []Entry{},
 		Failed:    []Entry{},
 		Cancelled: []Entry{},
 	}
-	for _, it := range b.Items {
+	for _, it := range items {
 		e := entryOf(it)
 		switch it.Status {
-		case store.Queued:
-		case store.Decided:
+		case Queued:
+			r.Counters.Queued++
+		case Decided:
+			r.Counters.Decided++
 			r.addDecided(e)
-		case store.Failed:
+		case Failed:
+			r.Counters.Failed++
 			r.Failed = append(r.Failed, e)
-		case store.Cancelled:
+		case Cancelled:
+			r.Counters.Cancelled++
 			r.Cancelled = append(r.Cancelled, e)
 		default:
 			panic("unhandled item status: " + string(it.Status))
 		}
 	}
-	return r
+	r.Status = statusOf(r.Counters)
+	return r, nil
 }
 
 func (r *Report) addDecided(e Entry) {
@@ -77,7 +91,7 @@ func (r *Report) addDecided(e Entry) {
 	}
 }
 
-func statusOf(c store.Counters) Status {
+func statusOf(c Counters) Status {
 	switch {
 	case c.Queued > 0:
 		return Processing
@@ -88,7 +102,7 @@ func statusOf(c store.Counters) Status {
 	}
 }
 
-func entryOf(it store.Item) Entry {
+func entryOf(it Item) Entry {
 	return Entry{
 		Index:                it.Index,
 		Name:                 it.Customer.Name,
@@ -98,20 +112,4 @@ func entryOf(it store.Item) Entry {
 		RevolvingAmountCents: it.Result.RevolvingAmountCents,
 		Attempts:             it.Attempts,
 	}
-}
-
-type UseCase struct {
-	batches store.BatchStore
-}
-
-func New(batches store.BatchStore) UseCase {
-	return UseCase{batches: batches}
-}
-
-func (u UseCase) Execute(ctx context.Context, batchID string) (Report, error) {
-	b, err := u.batches.Report(ctx, batchID)
-	if err != nil {
-		return Report{}, err
-	}
-	return From(b), nil
 }

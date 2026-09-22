@@ -5,7 +5,9 @@
   },
   "tasks": {
     "build": {},
-    "test": {},
+    "test": {
+      "passThroughEnv": ["AWS_ENDPOINT_URL", "AWS_TEST_ENDPOINT"]
+    },
     "lint": {},
     "format": {
       "cache": false

@@ -56,9 +56,21 @@ linters:
             - pkg: github.com/aws
               desc: rules must not import AWS
             - pkg: engine/internal/evaluate
-              desc: rules must not import a use case
+              desc: rules must not import a module
+            - pkg: engine/internal/batch
+              desc: rules must not import a module
             - pkg: engine/internal/adapter
               desc: rules must not import an adapter
+        modules-stay-off-aws:
+          files:
+            - "**/internal/batch/**"
+            - "**/internal/evaluate/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/aws
+              desc: modules reach AWS only through their ports (ADR 0002)
+            - pkg: engine/internal/adapter
+              desc: modules must not import an adapter
     govet:
       enable-all: true
       disable:

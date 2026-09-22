@@ -1,62 +1,61 @@
+// Package sqs consumes the batch queues: the EvaluationJobs queue and its DLQ.
 package sqs
 
 import (
 	"context"
 	"log/slog"
-	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 
-	"engine/internal/adapter/telemetry"
-	"engine/internal/evaluate"
-	"engine/internal/processjob"
-	"engine/internal/queue"
-	"engine/internal/rules"
-	"engine/internal/store"
+	"engine/internal/batch"
 )
 
-type Handler struct {
-	jobs processjob.UseCase
+// Consumer hands each record's attempt to handle and lists only the records
+// that failed, so SQS redelivers those and keeps the rest.
+type Consumer struct {
+	handle func(context.Context, batch.Attempt) error
+	// ackMalformed acknowledges a record that is not an attempt instead of
+	// reporting it.
+	ackMalformed bool
 }
 
-func New(jobs processjob.UseCase) Handler {
-	return Handler{jobs: jobs}
+// Worker evaluates attempts. A record that keeps failing, including one that
+// is not an attempt or names no item, reaches the DLQ after maxReceiveCount
+// receives, which is the signal the DLQ alarm watches.
+func Worker(b batch.Module) Consumer {
+	return Consumer{handle: b.Process}
 }
 
-func Default() Handler {
-	return New(processjob.New(evaluate.New(rules.NewPolicy()), store.NewMemory()))
+// DeadLetters fails the item of each dead-lettered attempt. A record that is
+// not an attempt is acknowledged, so it does not loop in the DLQ.
+func DeadLetters(b batch.Module) Consumer {
+	return Consumer{handle: b.DeadLetter, ackMalformed: true}
 }
 
-// Handle lists only the records that failed, so SQS redelivers those and
-// keeps the rest. A record that keeps failing, including one whose item does
-// not exist, reaches the DLQ after maxReceiveCount receives.
-func (h Handler) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEventResponse, error) {
+func (c Consumer) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEventResponse, error) {
 	var resp events.SQSEventResponse
 	for _, rec := range ev.Records {
-		job, err := queue.ParseJob(rec.Body)
-		if err != nil {
-			failRecord(rec, err, job)
-			resp.BatchItemFailures = append(resp.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: rec.MessageId})
+		a, err := batch.ParseAttempt(rec.Body)
+		if err != nil && c.ackMalformed {
 			continue
 		}
-		start := time.Now()
-		out, err := h.jobs.Execute(ctx, job)
-		if err != nil {
-			failRecord(rec, err, job)
-			resp.BatchItemFailures = append(resp.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: rec.MessageId})
-			continue
+		if err == nil {
+			err = c.handle(ctx, a)
 		}
-		if out.Recorded {
-			telemetry.Decision(out.Result, time.Since(start), telemetry.IDs{BatchID: out.BatchID, Index: out.Index})
+		if err != nil {
+			failRecord(rec, err, a)
+			resp.BatchItemFailures = append(resp.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: rec.MessageId})
 		}
 	}
 	return resp, nil
 }
 
-func failRecord(rec events.SQSMessage, err error, job queue.Job) {
+// failRecord logs the ids of a failed record, never its body: the body holds
+// the full CPF and the name.
+func failRecord(rec events.SQSMessage, err error, a batch.Attempt) {
 	attrs := []any{slog.String("message_id", rec.MessageId), slog.String("error", err.Error())}
-	if job.BatchID != "" {
-		attrs = append(attrs, slog.String("batch_id", job.BatchID), slog.Int("index", job.Index))
+	if a.BatchID != "" {
+		attrs = append(attrs, slog.String("batch_id", a.BatchID), slog.Int("index", a.Index))
 	}
 	slog.Error("record_failed", attrs...)
 }
