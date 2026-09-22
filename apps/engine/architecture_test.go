@@ -27,27 +27,37 @@ var rules = []rule{
 	{name: "domain imports another internal package",
 		from: "internal/domain", to: []string{"internal"}},
 	{name: "rules import a use case, store, queue, or adapter",
-		from: "internal/rules", to: []string{"internal/evaluate", "internal/processjob", "internal/submit", "internal/report", "internal/queue", "internal/store", "internal/adapter"}},
+		from: "internal/rules", to: []string{"internal/evaluate", "internal/processjob", "internal/submit", "internal/report", "internal/recovery", "internal/markfailed", "internal/queue", "internal/store", "internal/adapter"}},
 	{name: "store imports rules, use case, queue, or adapter",
-		from: "internal/store", to: []string{"internal/rules", "internal/evaluate", "internal/processjob", "internal/submit", "internal/report", "internal/queue", "internal/adapter"}},
+		from: "internal/store", to: []string{"internal/rules", "internal/evaluate", "internal/processjob", "internal/submit", "internal/report", "internal/recovery", "internal/markfailed", "internal/queue", "internal/adapter"}},
 	{name: "queue imports rules, use case, store, or adapter",
-		from: "internal/queue", to: []string{"internal/rules", "internal/evaluate", "internal/processjob", "internal/submit", "internal/report", "internal/store", "internal/adapter"}},
+		from: "internal/queue", to: []string{"internal/rules", "internal/evaluate", "internal/processjob", "internal/submit", "internal/report", "internal/recovery", "internal/markfailed", "internal/store", "internal/adapter"}},
 	{name: "evaluate imports another use case or adapter",
 		from: "internal/evaluate", to: []string{"internal/processjob", "internal/submit", "internal/report", "internal/queue", "internal/adapter"}},
-	{name: "submit imports evaluate, rules, store, report, or adapter",
-		from: "internal/submit", to: []string{"internal/evaluate", "internal/rules", "internal/store", "internal/report", "internal/processjob", "internal/adapter"}},
+	{name: "submit imports evaluate, rules, report, or adapter",
+		from: "internal/submit", to: []string{"internal/evaluate", "internal/rules", "internal/report", "internal/processjob", "internal/adapter"}},
 	{name: "report imports evaluate, rules, queue, submit, or adapter",
 		from: "internal/report", to: []string{"internal/evaluate", "internal/rules", "internal/queue", "internal/submit", "internal/processjob", "internal/adapter"}},
-	{name: "processjob imports rules, store, submit, report, or adapter",
-		from: "internal/processjob", to: []string{"internal/rules", "internal/store", "internal/submit", "internal/report", "internal/adapter"}},
-	{name: "adapter/httpapi imports processjob or worker adapters",
-		from: "internal/adapter/httpapi", to: []string{"internal/processjob", "internal/adapter/sqs", "internal/adapter/ddb", "internal/adapter/sqspub"}},
-	{name: "adapter/sqs imports submit, report, or httpapi",
-		from: "internal/adapter/sqs", to: []string{"internal/submit", "internal/report", "internal/adapter/httpapi"}},
-	{name: "cmd/http imports processjob or the worker adapter",
-		from: "cmd/http", to: []string{"internal/processjob", "internal/adapter/sqs"}},
-	{name: "cmd/worker imports submit, report, or httpapi",
-		from: "cmd/worker", to: []string{"internal/submit", "internal/report", "internal/adapter/httpapi", "internal/adapter/sqspub"}},
+	{name: "processjob imports rules, submit, report, or adapter",
+		from: "internal/processjob", to: []string{"internal/rules", "internal/submit", "internal/report", "internal/adapter"}},
+	{name: "recovery imports evaluate, rules, another use case, or adapter",
+		from: "internal/recovery", to: []string{"internal/evaluate", "internal/rules", "internal/submit", "internal/report", "internal/processjob", "internal/markfailed", "internal/adapter"}},
+	{name: "markfailed imports evaluate, rules, another use case, or adapter",
+		from: "internal/markfailed", to: []string{"internal/evaluate", "internal/rules", "internal/submit", "internal/report", "internal/processjob", "internal/recovery", "internal/adapter"}},
+	{name: "adapter/httpapi imports processjob, markfailed, or worker adapters",
+		from: "internal/adapter/httpapi", to: []string{"internal/processjob", "internal/markfailed", "internal/adapter/sqs", "internal/adapter/dlq", "internal/adapter/ddb", "internal/adapter/sqspub"}},
+	{name: "adapter/sqs imports submit, report, recovery, or httpapi",
+		from: "internal/adapter/sqs", to: []string{"internal/submit", "internal/report", "internal/recovery", "internal/adapter/httpapi"}},
+	{name: "adapter/dlq imports httpapi, submit, report, recovery, or processjob",
+		from: "internal/adapter/dlq", to: []string{"internal/adapter/httpapi", "internal/submit", "internal/report", "internal/recovery", "internal/processjob"}},
+	{name: "adapter/telemetry imports a use case or sibling adapter",
+		from: "internal/adapter/telemetry", to: []string{"internal/evaluate", "internal/processjob", "internal/submit", "internal/report", "internal/recovery", "internal/markfailed", "internal/adapter/httpapi", "internal/adapter/sqs", "internal/adapter/dlq", "internal/adapter/ddb", "internal/adapter/sqspub"}},
+	{name: "cmd/http imports processjob, markfailed, or the queue consumers",
+		from: "cmd/http", to: []string{"internal/processjob", "internal/markfailed", "internal/adapter/sqs", "internal/adapter/dlq"}},
+	{name: "cmd/worker imports submit, report, recovery, or httpapi",
+		from: "cmd/worker", to: []string{"internal/submit", "internal/report", "internal/recovery", "internal/adapter/httpapi", "internal/adapter/sqspub"}},
+	{name: "cmd/dlq imports submit, report, recovery, processjob, or httpapi",
+		from: "cmd/dlq", to: []string{"internal/submit", "internal/report", "internal/recovery", "internal/processjob", "internal/adapter/httpapi", "internal/adapter/sqspub"}},
 }
 
 func Violations(g Graph) []string {
@@ -96,7 +106,7 @@ func ExternalImportViolations(g Graph) []string {
 			continue
 		}
 		for _, imp := range imports {
-			if awsIn(from, "internal/domain", "internal/rules", "internal/evaluate", "internal/store", "internal/queue", "internal/submit", "internal/report", "internal/processjob") &&
+			if awsIn(from, "internal/domain", "internal/rules", "internal/evaluate", "internal/store", "internal/queue", "internal/submit", "internal/report", "internal/processjob", "internal/recovery", "internal/markfailed") &&
 				(strings.HasPrefix(imp, "github.com/aws/") || strings.HasPrefix(imp, "github.com/aws/aws-cdk-go")) {
 				out = append(out, from+" -> "+imp+" (pure packages import AWS)")
 			}
@@ -137,19 +147,33 @@ func TestFixtureDomainImportingEvaluateFails(t *testing.T) {
 	}
 }
 
+func TestFixtureDLQAdapterImportingHTTPAPIFails(t *testing.T) {
+	fixture := Graph{
+		modulePrefix + "/internal/adapter/dlq": {modulePrefix + "/internal/adapter/httpapi", modulePrefix + "/internal/submit", modulePrefix + "/internal/report"},
+	}
+	if got := len(Violations(fixture)); got != 3 {
+		t.Fatalf("expected 3 violations for dlq -> httpapi, submit, report, got %d", got)
+	}
+}
+
 func TestFixtureAllowedEdgesStayClean(t *testing.T) {
 	fixture := Graph{
-		modulePrefix + "/cmd/http":                 {modulePrefix + "/internal/adapter/httpapi", modulePrefix + "/internal/adapter/ddb", modulePrefix + "/internal/submit"},
-		modulePrefix + "/cmd/worker":               {modulePrefix + "/internal/adapter/sqs", modulePrefix + "/internal/adapter/ddb", modulePrefix + "/internal/processjob"},
-		modulePrefix + "/internal/adapter/httpapi": {modulePrefix + "/internal/evaluate", modulePrefix + "/internal/submit", modulePrefix + "/internal/report"},
-		modulePrefix + "/internal/adapter/sqs":     {modulePrefix + "/internal/processjob"},
-		modulePrefix + "/internal/submit":          {modulePrefix + "/internal/queue"},
-		modulePrefix + "/internal/report":          {modulePrefix + "/internal/store"},
-		modulePrefix + "/internal/processjob":      {modulePrefix + "/internal/evaluate", modulePrefix + "/internal/queue"},
-		modulePrefix + "/internal/evaluate":        {modulePrefix + "/internal/rules", modulePrefix + "/internal/store"},
-		modulePrefix + "/internal/rules":           {modulePrefix + "/internal/domain"},
-		modulePrefix + "/internal/store":           {modulePrefix + "/internal/domain"},
-		modulePrefix + "/internal/queue":           {modulePrefix + "/internal/domain"},
+		modulePrefix + "/cmd/http":                   {modulePrefix + "/internal/adapter/httpapi", modulePrefix + "/internal/adapter/ddb", modulePrefix + "/internal/adapter/telemetry", modulePrefix + "/internal/submit"},
+		modulePrefix + "/cmd/worker":                 {modulePrefix + "/internal/adapter/sqs", modulePrefix + "/internal/adapter/ddb", modulePrefix + "/internal/processjob"},
+		modulePrefix + "/cmd/dlq":                    {modulePrefix + "/internal/adapter/dlq", modulePrefix + "/internal/adapter/ddb", modulePrefix + "/internal/adapter/telemetry", modulePrefix + "/internal/markfailed"},
+		modulePrefix + "/internal/adapter/dlq":       {modulePrefix + "/internal/markfailed"},
+		modulePrefix + "/internal/adapter/telemetry": {modulePrefix + "/internal/store", modulePrefix + "/internal/domain"},
+		modulePrefix + "/internal/recovery":          {modulePrefix + "/internal/queue", modulePrefix + "/internal/store"},
+		modulePrefix + "/internal/markfailed":        {modulePrefix + "/internal/queue", modulePrefix + "/internal/store"},
+		modulePrefix + "/internal/adapter/httpapi":   {modulePrefix + "/internal/evaluate", modulePrefix + "/internal/submit", modulePrefix + "/internal/report", modulePrefix + "/internal/recovery", modulePrefix + "/internal/adapter/telemetry"},
+		modulePrefix + "/internal/adapter/sqs":       {modulePrefix + "/internal/processjob", modulePrefix + "/internal/adapter/telemetry"},
+		modulePrefix + "/internal/submit":            {modulePrefix + "/internal/queue", modulePrefix + "/internal/store"},
+		modulePrefix + "/internal/report":            {modulePrefix + "/internal/store"},
+		modulePrefix + "/internal/processjob":        {modulePrefix + "/internal/evaluate", modulePrefix + "/internal/queue", modulePrefix + "/internal/store"},
+		modulePrefix + "/internal/evaluate":          {modulePrefix + "/internal/rules", modulePrefix + "/internal/store"},
+		modulePrefix + "/internal/rules":             {modulePrefix + "/internal/domain"},
+		modulePrefix + "/internal/store":             {modulePrefix + "/internal/domain"},
+		modulePrefix + "/internal/queue":             {modulePrefix + "/internal/domain"},
 	}
 	if violations := Violations(fixture); len(violations) > 0 {
 		t.Errorf("expected no violations, got:\n%s", strings.Join(violations, "\n"))

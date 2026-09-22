@@ -2,15 +2,23 @@ package httpapi
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
-	"fmt"
+	"errors"
+	"log/slog"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 
+	"engine/internal/adapter/telemetry"
 	"engine/internal/domain"
 	"engine/internal/evaluate"
 	"engine/internal/queue"
+	"engine/internal/recovery"
 	"engine/internal/report"
 	"engine/internal/rules"
 	"engine/internal/store"
@@ -18,24 +26,36 @@ import (
 )
 
 type Handler struct {
-	evaluate evaluate.UseCase
-	submit   submit.UseCase
-	report   report.UseCase
+	evaluate  evaluate.UseCase
+	decisions store.DecisionStore
+	submit    submit.UseCase
+	report    report.UseCase
+	recovery  recovery.UseCase
 }
 
-func New(ev evaluate.UseCase, sub submit.UseCase, rep report.UseCase) Handler {
-	return Handler{evaluate: ev, submit: sub, report: rep}
+func New(ev evaluate.UseCase, decisions store.DecisionStore, sub submit.UseCase, rep report.UseCase, rec recovery.UseCase) Handler {
+	return Handler{evaluate: ev, decisions: decisions, submit: sub, report: rep, recovery: rec}
 }
 
 func Default() Handler {
 	mem := store.NewMemory()
-	ev := evaluate.New(rules.NewChain(), mem)
-	return New(ev, submit.New(queue.NewMemory()), report.New(mem))
+	q := queue.NewMemory()
+	batches := telemetry.Observe(mem)
+	return New(evaluate.New(rules.NewPolicy()), mem, submit.New(batches, q, submit.DefaultBatchSize), report.New(mem), recovery.New(batches, q))
 }
 
 func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	method := req.RequestContext.HTTP.Method
 	path := req.RequestContext.HTTP.Path
+	// API Gateway base64-encodes bodies with a non-text content type, such as
+	// the application/x-www-form-urlencoded that `curl -d` sends.
+	if req.IsBase64Encoded {
+		body, err := base64.StdEncoding.DecodeString(req.Body)
+		if err != nil {
+			return jsonResp(400, map[string]string{"error": "invalid_body"}), nil //nolint:nilerr // the adapter maps the error to a status code
+		}
+		req.Body = string(body)
+	}
 	switch {
 	case method == "GET" && path == "/health":
 		return jsonResp(200, map[string]string{"status": "ok"}), nil
@@ -43,50 +63,183 @@ func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 		return h.one(ctx, req)
 	case method == "POST" && path == "/evaluations/batch":
 		return h.enqueue(ctx, req)
-	case method == "GET" && (strings.HasPrefix(path, "/reports/") || req.PathParameters["id"] != ""):
-		id := req.PathParameters["id"]
-		if id == "" {
-			id = strings.TrimPrefix(path, "/reports/")
-		}
-		return h.snapshot(ctx, id)
-	default:
-		return jsonResp(404, map[string]string{"error": "not_found"}), nil
+	case method == "POST":
+		return h.recoverItems(ctx, path), nil
+	case method != "GET":
+		return notFound(), nil
 	}
+	if id, ok := pathID(path, "/evaluations/", ""); ok {
+		return h.decision(ctx, id)
+	}
+	if id, ok := pathID(path, "/batches/", "/report"); ok {
+		return h.batchReport(ctx, id)
+	}
+	return notFound(), nil
+}
+
+// pathID returns the single segment between prefix and suffix.
+func pathID(path, prefix, suffix string) (string, bool) {
+	rest, ok := strings.CutPrefix(path, prefix)
+	if !ok {
+		return "", false
+	}
+	id, ok := strings.CutSuffix(rest, suffix)
+	if !ok || id == "" || strings.Contains(id, "/") {
+		return "", false
+	}
+	return id, true
+}
+
+type decisionResponse struct {
+	DecisionID string `json:"decision_id"`
+	domain.Result
 }
 
 func (h Handler) one(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	var c domain.Customer
 	if err := json.Unmarshal([]byte(req.Body), &c); err != nil {
-		return jsonResp(400, map[string]string{"error": "invalid_customer"}), nil
+		return jsonResp(400, map[string]string{"error": "invalid_json"}), nil //nolint:nilerr // the adapter maps the error to a status code
 	}
-	r, err := h.evaluate.Execute(ctx, "sync", c)
+	if v := c.Validate(); len(v) > 0 {
+		return jsonResp(422, map[string]any{"error": "invalid_customer", "violations": v}), nil
+	}
+	start := time.Now()
+	r := h.evaluate.Execute(ctx, c)
+	id := newID()
+	// Fail closed (ADR 0001): a decision that was not recorded is not returned.
+	if err := h.decisions.Save(ctx, id, c, r); err != nil {
+		log5xx(err)
+		return jsonResp(503, map[string]string{"error": "decision_not_recorded"}), nil
+	}
+	telemetry.Decision(r, time.Since(start), telemetry.IDs{DecisionID: id})
+	return jsonResp(200, decisionResponse{DecisionID: id, Result: r}), nil
+}
+
+func (h Handler) decision(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
+	r, err := h.decisions.Get(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return notFound(), nil
+	}
 	if err != nil {
+		log5xx(err)
 		return jsonResp(500, map[string]string{"error": "store_failed"}), nil
 	}
-	return jsonResp(200, r), nil
+	return jsonResp(200, decisionResponse{DecisionID: id, Result: r}), nil
 }
 
 func (h Handler) enqueue(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
 	customers, err := parseCustomers(req.Body)
 	if err != nil {
-		return jsonResp(400, map[string]string{"error": "invalid_batch"}), nil
+		return jsonResp(400, map[string]string{"error": "invalid_batch"}), nil //nolint:nilerr // the adapter maps the error to a status code
+	}
+	var violations []indexedViolation
+	for i := range customers {
+		for _, v := range customers[i].Validate() {
+			violations = append(violations, indexedViolation{Index: i, Violation: v})
+		}
+	}
+	if len(violations) > 0 {
+		return jsonResp(422, map[string]any{"error": "invalid_customer", "violations": violations}), nil
 	}
 	acc, err := h.submit.Execute(ctx, customers)
+	if errors.Is(err, submit.ErrBatchTooLarge) {
+		return jsonResp(422, map[string]any{"error": "batch_too_large", "max": h.submit.MaxCustomers()}), nil
+	}
+	if errors.Is(err, submit.ErrNotRecorded) {
+		log5xx(err)
+		return jsonResp(503, map[string]string{"error": "batch_not_recorded"}), nil
+	}
 	if err != nil {
-		return jsonResp(500, map[string]string{"error": "enqueue_failed"}), nil
+		log5xx(err)
+		return jsonResp(503, map[string]string{"error": "enqueue_failed"}), nil
 	}
 	return jsonResp(202, acc), nil
 }
 
-func (h Handler) snapshot(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
-	if id == "" {
-		return jsonResp(400, map[string]string{"error": "missing_report_id"}), nil
+// recoverItems serves the operator routes on failed batch items.
+func (h Handler) recoverItems(ctx context.Context, path string) events.APIGatewayV2HTTPResponse {
+	if id, ok := pathID(path, "/batches/", "/retry-failed"); ok {
+		n, err := h.recovery.RetryFailed(ctx, id)
+		if err != nil {
+			return recoveryErr(err)
+		}
+		return jsonResp(202, map[string]int{"requeued": n})
 	}
-	snap, err := h.report.Execute(ctx, id)
+	id, index, action, ok := itemPath(path)
+	if !ok {
+		return notFound()
+	}
+	if action == "cancel" {
+		if err := h.recovery.Cancel(ctx, id, index); err != nil {
+			return recoveryErr(err)
+		}
+		return jsonResp(200, map[string]any{"index": index, "status": store.Cancelled})
+	}
+	attempts, err := h.recovery.Retry(ctx, id, index)
 	if err != nil {
+		return recoveryErr(err)
+	}
+	return jsonResp(202, map[string]int{"index": index, "attempts": attempts})
+}
+
+// itemPath parses /batches/{id}/items/{index}/{retry|cancel}.
+func itemPath(path string) (id string, index int, action string, ok bool) {
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) != 5 || parts[0] != "batches" || parts[1] == "" || parts[2] != "items" {
+		return "", 0, "", false
+	}
+	if parts[4] != "retry" && parts[4] != "cancel" {
+		return "", 0, "", false
+	}
+	index, err := strconv.Atoi(parts[3])
+	if err != nil || index < 0 {
+		return "", 0, "", false
+	}
+	return parts[1], index, parts[4], true
+}
+
+func recoveryErr(err error) events.APIGatewayV2HTTPResponse {
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		return notFound()
+	case errors.Is(err, store.ErrInvalidTransition):
+		return jsonResp(409, map[string]string{"error": "invalid_transition"})
+	case errors.Is(err, store.ErrMaxAttempts):
+		return jsonResp(409, map[string]string{"error": "max_attempts_reached"})
+	case errors.Is(err, recovery.ErrEnqueueFailed):
+		log5xx(err)
+		return jsonResp(503, map[string]string{"error": "enqueue_failed"})
+	default:
+		log5xx(err)
+		return jsonResp(503, map[string]string{"error": "store_failed"})
+	}
+}
+
+func (h Handler) batchReport(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
+	rep, err := h.report.Execute(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return notFound(), nil
+	}
+	if err != nil {
+		log5xx(err)
 		return jsonResp(500, map[string]string{"error": "store_failed"}), nil
 	}
-	return jsonResp(200, snap), nil
+	return jsonResp(200, rep), nil
+}
+
+func notFound() events.APIGatewayV2HTTPResponse {
+	return jsonResp(404, map[string]string{"error": "not_found"})
+}
+
+func newID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+type indexedViolation struct {
+	Index int `json:"index"`
+	domain.Violation
 }
 
 func parseCustomers(body string) ([]domain.Customer, error) {
@@ -99,7 +252,7 @@ func parseCustomers(body string) ([]domain.Customer, error) {
 	}
 	var list []domain.Customer
 	if err := json.Unmarshal([]byte(body), &list); err != nil || len(list) == 0 {
-		return nil, fmt.Errorf("invalid_batch")
+		return nil, errors.New("invalid_batch")
 	}
 	return list, nil
 }
@@ -107,6 +260,7 @@ func parseCustomers(body string) ([]domain.Customer, error) {
 func jsonResp(code int, v any) events.APIGatewayV2HTTPResponse {
 	b, err := json.Marshal(v)
 	if err != nil {
+		log5xx(err)
 		return events.APIGatewayV2HTTPResponse{
 			StatusCode: 500,
 			Headers:    map[string]string{"content-type": "application/json"},
@@ -118,4 +272,8 @@ func jsonResp(code int, v any) events.APIGatewayV2HTTPResponse {
 		Headers:    map[string]string{"content-type": "application/json"},
 		Body:       string(b),
 	}
+}
+
+func log5xx(err error) {
+	slog.Error("handler_failed", slog.String("error", err.Error()))
 }

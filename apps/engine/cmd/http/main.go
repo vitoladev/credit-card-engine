@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"errors"
+	"log/slog"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -11,13 +12,16 @@ import (
 	"engine/internal/adapter/ddb"
 	"engine/internal/adapter/httpapi"
 	"engine/internal/adapter/sqspub"
+	"engine/internal/adapter/telemetry"
 	"engine/internal/evaluate"
+	"engine/internal/recovery"
 	"engine/internal/report"
 	"engine/internal/rules"
 	"engine/internal/submit"
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	h, err := compose(context.Background())
 	if err != nil {
 		panic(err)
@@ -29,13 +33,18 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 	table := os.Getenv("DECISIONS_TABLE")
 	queueURL := os.Getenv("QUEUE_URL")
 	if table == "" || queueURL == "" {
-		return httpapi.Handler{}, fmt.Errorf("DECISIONS_TABLE and QUEUE_URL required")
+		return httpapi.Handler{}, errors.New("DECISIONS_TABLE and QUEUE_URL required")
+	}
+	batchSize, err := submit.ParseBatchSize(os.Getenv("BATCH_SIZE"))
+	if err != nil {
+		return httpapi.Handler{}, err
 	}
 	cfg, err := awsconfig.Load(ctx)
 	if err != nil {
 		return httpapi.Handler{}, err
 	}
-	decisions := ddb.New(cfg, table)
-	ev := evaluate.New(rules.NewChain(), decisions)
-	return httpapi.New(ev, submit.New(sqspub.New(cfg, queueURL)), report.New(decisions)), nil
+	st := ddb.New(cfg, table)
+	batches := telemetry.Observe(st)
+	pub := sqspub.New(cfg, queueURL)
+	return httpapi.New(evaluate.New(rules.NewPolicy()), st, submit.New(batches, pub, batchSize), report.New(st), recovery.New(batches, pub)), nil
 }

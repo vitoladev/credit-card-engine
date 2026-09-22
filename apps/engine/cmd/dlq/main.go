@@ -10,10 +10,9 @@ import (
 
 	"engine/internal/adapter/awsconfig"
 	"engine/internal/adapter/ddb"
-	"engine/internal/adapter/sqs"
-	"engine/internal/evaluate"
-	"engine/internal/processjob"
-	"engine/internal/rules"
+	"engine/internal/adapter/dlq"
+	"engine/internal/adapter/telemetry"
+	"engine/internal/markfailed"
 )
 
 func main() {
@@ -25,14 +24,14 @@ func main() {
 	lambda.Start(h.Handle)
 }
 
-func compose(ctx context.Context) (sqs.Handler, error) {
+func compose(ctx context.Context) (dlq.Handler, error) {
 	table := os.Getenv("DECISIONS_TABLE")
 	if table == "" {
-		return sqs.Handler{}, errors.New("DECISIONS_TABLE required")
+		return dlq.Handler{}, errors.New("DECISIONS_TABLE required")
 	}
 	cfg, err := awsconfig.Load(ctx)
 	if err != nil {
-		return sqs.Handler{}, err
+		return dlq.Handler{}, err
 	}
-	return sqs.New(processjob.New(evaluate.New(rules.NewPolicy()), ddb.New(cfg, table))), nil
+	return dlq.New(markfailed.New(telemetry.Observe(ddb.New(cfg, table)))), nil
 }

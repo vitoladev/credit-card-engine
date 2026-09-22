@@ -6,7 +6,7 @@ type Customer struct {
 	CPF                 string  `json:"cpf"`
 	CreditScore         int     `json:"credit_score"`
 	CurrentInvoiceCents int64   `json:"current_invoice_cents"`
-	AvailableLimitCents int64   `json:"available_limit_cents"`
+	CreditLimitCents    int64   `json:"credit_limit_cents"`
 	LatePayments        int     `json:"late_payments"`
 	MonthlySpendCents   []int64 `json:"monthly_spend_cents"`
 }

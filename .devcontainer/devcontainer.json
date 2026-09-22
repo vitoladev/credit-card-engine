@@ -35,7 +35,7 @@
     "AWS_S3_FORCE_PATH_STYLE": "true"
   },
   "postCreateCommand": "npm install && npm install -g aws-cdk@2.1142.0 aws-cdk-local@3.0.4 && go work sync",
-  "postStartCommand": "bash .devcontainer/wait-floci.sh",
+  "postStartCommand": "git config --global --add safe.directory ${containerWorkspaceFolder} && bash .devcontainer/wait-floci.sh",
   "customizations": {
     "vscode": {
       "extensions": ["golang.go"]

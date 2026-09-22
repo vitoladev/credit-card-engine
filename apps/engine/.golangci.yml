@@ -43,6 +43,7 @@ linters:
         domain-stays-pure:
           files:
             - "**/internal/domain/**"
+            - "!$test"
           deny:
             - pkg: github.com/aws
               desc: domain must not import AWS

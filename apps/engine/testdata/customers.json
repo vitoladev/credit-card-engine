@@ -4,16 +4,16 @@
     "cpf": "39053344705",
     "credit_score": 780,
     "current_invoice_cents": 150000,
-    "available_limit_cents": 800000,
+    "credit_limit_cents": 800000,
     "late_payments": 0,
     "monthly_spend_cents": [120000, 130000, 110000]
   },
   {
     "name": "Bruno Lima",
-    "cpf": "12345678901",
+    "cpf": "12345678909",
     "credit_score": 520,
     "current_invoice_cents": 200000,
-    "available_limit_cents": 400000,
+    "credit_limit_cents": 400000,
     "late_payments": 0,
     "monthly_spend_cents": [80000, 90000]
   },
@@ -22,16 +22,16 @@
     "cpf": "98765432100",
     "credit_score": 690,
     "current_invoice_cents": 900000,
-    "available_limit_cents": 500000,
+    "credit_limit_cents": 500000,
     "late_payments": 1,
     "monthly_spend_cents": [100000, 120000, 110000]
   },
   {
     "name": "Diego Alves",
-    "cpf": "11122233344",
+    "cpf": "11122233396",
     "credit_score": 810,
     "current_invoice_cents": 50000,
-    "available_limit_cents": 1200000,
+    "credit_limit_cents": 1200000,
     "late_payments": 3,
     "monthly_spend_cents": [200000, 180000, 190000]
   }
