@@ -20,6 +20,12 @@ services:
 
   floci:
     image: floci/floci:2.1.0
+    networks:
+      default:
+        aliases:
+          # cdklocal publishes assets virtual-hosted style (<bucket>.floci)
+          # even with AWS_S3_FORCE_PATH_STYLE set.
+          - cdk-hnb659fds-assets-000000000000-us-east-1.floci
     ports:
       - "4566:4566"
     volumes:
