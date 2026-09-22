@@ -1,0 +1,23 @@
+{
+  "bindings": {
+    "tracker": {
+      "kind": "github",
+      "id_pattern": "#[0-9]+",
+      "docs": null
+    },
+    "standards_doc": "docs/CODING_STANDARDS.md",
+    "command": {
+      "wrapper": "devcontainer exec --workspace-folder ."
+    },
+    "labels": {
+      "frontend": null,
+      "contract": null,
+      "infra": null
+    },
+    "review_bot": null,
+    "optional": {
+      "promote-e2e": false,
+      "pr-preview-media": false
+    }
+  }
+}
