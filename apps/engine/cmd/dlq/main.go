@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -10,10 +11,12 @@ import (
 	"engine/internal/adapter/awsconfig"
 	"engine/internal/adapter/ddb"
 	"engine/internal/adapter/dlq"
+	"engine/internal/adapter/telemetry"
 	"engine/internal/markfailed"
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	h, err := compose(context.Background())
 	if err != nil {
 		panic(err)
@@ -30,5 +33,5 @@ func compose(ctx context.Context) (dlq.Handler, error) {
 	if err != nil {
 		return dlq.Handler{}, err
 	}
-	return dlq.New(markfailed.New(ddb.New(cfg, table))), nil
+	return dlq.New(markfailed.New(telemetry.Observe(ddb.New(cfg, table)))), nil
 }

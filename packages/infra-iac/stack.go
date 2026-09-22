@@ -7,6 +7,7 @@ import (
 
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsapigatewayv2"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsapigatewayv2authorizers"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsapigatewayv2integrations"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
@@ -142,6 +143,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		fn,
 		&awsapigatewayv2integrations.HttpLambdaIntegrationProps{},
 	)
+	authorizer := awsapigatewayv2authorizers.NewHttpIamAuthorizer()
 	for _, route := range []struct {
 		path    string
 		methods []awsapigatewayv2.HttpMethod
@@ -155,11 +157,15 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		{"/batches/{id}/retry-failed", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
 		{"/health", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
 	} {
-		api.AddRoutes(&awsapigatewayv2.AddRoutesOptions{
+		opts := &awsapigatewayv2.AddRoutesOptions{
 			Path:        jsii.String(route.path),
 			Methods:     &route.methods,
 			Integration: integration,
-		})
+		}
+		if route.path != "/health" {
+			opts.Authorizer = authorizer
+		}
+		api.AddRoutes(opts)
 	}
 
 	stage := awsapigatewayv2.NewHttpStage(stack, jsii.String("Default"), &awsapigatewayv2.HttpStageProps{
@@ -172,7 +178,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		},
 	})
 
-	wireAlarms(stack, fn)
+	wireObservability(stack, fn, worker, dlqConsumer, api, dlq)
 
 	awscdk.NewCfnOutput(stack, jsii.String("ApiUrl"), &awscdk.CfnOutputProps{
 		Value: stage.Url(),

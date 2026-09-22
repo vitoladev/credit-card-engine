@@ -2,9 +2,11 @@ package sqs
 
 import (
 	"context"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 
+	"engine/internal/adapter/telemetry"
 	"engine/internal/evaluate"
 	"engine/internal/processjob"
 	"engine/internal/rules"
@@ -29,8 +31,14 @@ func Default() Handler {
 func (h Handler) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEventResponse, error) {
 	var resp events.SQSEventResponse
 	for _, rec := range ev.Records {
-		if err := h.jobs.Execute(ctx, []byte(rec.Body)); err != nil {
+		start := time.Now()
+		out, err := h.jobs.Execute(ctx, []byte(rec.Body))
+		if err != nil {
 			resp.BatchItemFailures = append(resp.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: rec.MessageId})
+			continue
+		}
+		if out.Recorded {
+			telemetry.Decision(out.Result, time.Since(start), telemetry.IDs{BatchID: out.BatchID, Index: out.Index})
 		}
 	}
 	return resp, nil

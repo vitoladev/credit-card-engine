@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 
 	"github.com/aws/aws-lambda-go/lambda"
@@ -11,6 +12,7 @@ import (
 	"engine/internal/adapter/ddb"
 	"engine/internal/adapter/httpapi"
 	"engine/internal/adapter/sqspub"
+	"engine/internal/adapter/telemetry"
 	"engine/internal/evaluate"
 	"engine/internal/recovery"
 	"engine/internal/report"
@@ -19,6 +21,7 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	h, err := compose(context.Background())
 	if err != nil {
 		panic(err)
@@ -41,6 +44,7 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 		return httpapi.Handler{}, err
 	}
 	st := ddb.New(cfg, table)
+	batches := telemetry.Observe(st)
 	pub := sqspub.New(cfg, queueURL)
-	return httpapi.New(evaluate.New(rules.NewPolicy()), st, submit.New(st, pub, batchSize), report.New(st), recovery.New(st, pub)), nil
+	return httpapi.New(evaluate.New(rules.NewPolicy()), st, submit.New(batches, pub, batchSize), report.New(st), recovery.New(batches, pub)), nil
 }

@@ -29,7 +29,7 @@ func TestExecuteDecidesTheItemOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := uc.Execute(t.Context(), body); err != nil {
+		if _, err := uc.Execute(t.Context(), body); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -51,14 +51,14 @@ func TestExecuteFailsForAnUnknownItem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := uc.Execute(t.Context(), body); err == nil {
+	if _, err := uc.Execute(t.Context(), body); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
 func TestExecuteRejectsInvalidJSON(t *testing.T) {
 	uc := processjob.New(evaluate.New(rules.NewPolicy()), store.NewMemory())
-	if err := uc.Execute(t.Context(), []byte("{")); err == nil {
+	if _, err := uc.Execute(t.Context(), []byte("{")); err == nil {
 		t.Fatal("expected error")
 	}
 }

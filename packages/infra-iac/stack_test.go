@@ -21,7 +21,7 @@ func TestStackHasTheDayZeroSurface(t *testing.T) {
 	template.ResourceCountIs(jsii.String("AWS::ApiGatewayV2::Stage"), jsii.Number(1))
 	template.ResourceCountIs(jsii.String("AWS::Lambda::Function"), jsii.Number(3))
 	template.ResourceCountIs(jsii.String("AWS::SQS::Queue"), jsii.Number(2))
-	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Alarm"), jsii.Number(2))
+	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Alarm"), jsii.Number(5))
 
 	template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), map[string]any{
 		"BillingMode": "PAY_PER_REQUEST",
@@ -178,6 +178,85 @@ func refersTo(res any, logicalID string) bool {
 		}
 	}
 	return false
+}
+
+func TestStackHasIAMAuthorizerDashboardAndAlarms(t *testing.T) {
+	t.Cleanup(jsii.Close)
+	app := awscdk.NewApp(nil)
+	stack := NewStack(app, "Test", nil)
+	template := assertions.Template_FromStack(stack, nil)
+
+	protected := []string{
+		"POST /evaluations",
+		"GET /evaluations/{id}",
+		"POST /evaluations/batch",
+		"GET /batches/{id}/report",
+		"POST /batches/{id}/items/{index}/retry",
+		"POST /batches/{id}/items/{index}/cancel",
+		"POST /batches/{id}/retry-failed",
+	}
+	for _, key := range protected {
+		template.HasResourceProperties(jsii.String("AWS::ApiGatewayV2::Route"), map[string]any{
+			"RouteKey":          key,
+			"AuthorizationType": "AWS_IAM",
+		})
+	}
+	template.HasResourceProperties(jsii.String("AWS::ApiGatewayV2::Route"), map[string]any{
+		"RouteKey":          "GET /health",
+		"AuthorizationType": "NONE",
+	})
+
+	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Dashboard"), jsii.Number(1))
+	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Dashboard"), map[string]any{
+		"DashboardName": dashboardName,
+	})
+
+	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
+		"Threshold":         api5xxAlarmThreshold,
+		"EvaluationPeriods": 1,
+		"TreatMissingData":  "notBreaching",
+		"Namespace":         "AWS/ApiGateway",
+		"MetricName":        "5xx",
+	})
+	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
+		"Threshold":         workerErrorAlarmThreshold,
+		"EvaluationPeriods": 1,
+		"TreatMissingData":  "notBreaching",
+		"Namespace":         "AWS/Lambda",
+		"MetricName":        "Errors",
+		"Dimensions": []any{
+			map[string]any{"Name": "FunctionName", "Value": map[string]any{"Ref": assertions.Match_StringLikeRegexp(jsii.String(workerFunctionID))}},
+		},
+	})
+	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
+		"Threshold":         dlqConsumerErrorAlarmThreshold,
+		"EvaluationPeriods": 1,
+		"TreatMissingData":  "notBreaching",
+		"Namespace":         "AWS/Lambda",
+		"MetricName":        "Errors",
+		"Dimensions": []any{
+			map[string]any{"Name": "FunctionName", "Value": map[string]any{"Ref": assertions.Match_StringLikeRegexp(jsii.String(dlqFunctionID))}},
+		},
+	})
+	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
+		"Threshold":            dlqVisibleAlarmThreshold,
+		"EvaluationPeriods":    dlqVisibleEvaluationPeriods,
+		"ComparisonOperator":   "GreaterThanThreshold",
+		"TreatMissingData":     "notBreaching",
+		"Namespace":            "AWS/SQS",
+		"MetricName":           "ApproximateNumberOfMessagesVisible",
+	})
+	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
+		"Threshold":         latencyAlarmMs,
+		"EvaluationPeriods": 3,
+		"TreatMissingData":  "notBreaching",
+		"Namespace":         "AWS/Lambda",
+		"MetricName":        "Duration",
+		"ExtendedStatistic": "p99",
+		"Dimensions": []any{
+			map[string]any{"Name": "FunctionName", "Value": map[string]any{"Ref": assertions.Match_StringLikeRegexp(jsii.String(functionID))}},
+		},
+	})
 }
 
 func TestLambdaEntriesPointAtApps(t *testing.T) {

@@ -39,6 +39,15 @@ const (
 	lambdaTimeoutS = 3
 	lambdaMemoryMB = 256
 	latencyAlarmMs = 800
+
+	metricsNamespace = "CreditCardEngine"
+	dashboardName    = "CreditCardEngine"
+
+	api5xxAlarmThreshold           = 1
+	workerErrorAlarmThreshold      = 1
+	dlqConsumerErrorAlarmThreshold = 1
+	dlqVisibleAlarmThreshold       = 0
+	dlqVisibleEvaluationPeriods    = 5
 )
 
 func repoRoot() string {

@@ -24,10 +24,12 @@ make local-deploy
 
 BASE="$(make -s api-url)"
 curl -s "$BASE/health"
-curl -s -X POST "$BASE/evaluations" \
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/evaluations" \
   -H 'content-type: application/json' \
   --data '{"name":"Ana","cpf":"390.533.447-05","credit_score":780,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000,90000,70000]}'
-curl -s -X POST "$BASE/evaluations/batch" \
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/evaluations/batch" \
   -H 'content-type: application/json' \
   --data-binary @apps/engine/testdata/customers.json
 ```
@@ -37,7 +39,8 @@ curl -s -X POST "$BASE/evaluations/batch" \
 returns `400`; an invalid customer returns `422` with every violation:
 
 ```bash
-curl -s -X POST "$BASE/evaluations" \
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/evaluations" \
   -H 'content-type: application/json' \
   --data '{"name":"Ana","cpf":"39053344706","credit_score":-1,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000]}'
 # {"error":"invalid_customer","violations":[{"field":"cpf","code":"invalid_check_digits"},{"field":"credit_score","code":"negative"}]}
@@ -46,7 +49,8 @@ curl -s -X POST "$BASE/evaluations" \
 The decision is stored and can be read back; an unknown id returns `404`:
 
 ```bash
-curl -s "$BASE/evaluations/<decision_id>"
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  "$BASE/evaluations/<decision_id>"
 ```
 
 `POST /evaluations/batch` accepts at most `BATCH_SIZE` customers (default
@@ -58,7 +62,8 @@ returns `422` with each violation's `index`. In both cases nothing is stored
 or queued. The worker drains SQS and decides each batch item. Then:
 
 ```bash
-curl -s "$BASE/batches/<batch_id>/report"
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  "$BASE/batches/<batch_id>/report"
 ```
 
 The report shows the batch status (`PROCESSING` while items are queued,
@@ -73,11 +78,14 @@ most 5 attempts per item):
 
 ```bash
 # Retry one failed item: 202 {"index":0,"attempts":2}
-curl -s -X POST "$BASE/batches/<batch_id>/items/0/retry"
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/batches/<batch_id>/items/0/retry"
 # Retry every failed item under 5 attempts: 202 {"requeued":<n>}
-curl -s -X POST "$BASE/batches/<batch_id>/retry-failed"
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/batches/<batch_id>/retry-failed"
 # Cancel one failed item: 200 {"index":0,"status":"CANCELLED"}, again 200
-curl -s -X POST "$BASE/batches/<batch_id>/items/0/cancel"
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/batches/<batch_id>/items/0/cancel"
 ```
 
 Retrying or cancelling an item that is not `FAILED` returns
@@ -132,13 +140,14 @@ your Floci answers under another name on that network.
 
 | Target | What it does |
 |---|---|
-| `make test` | `turbo run test` — engine, lambdas, and stack |
-| `make loadtest` | k6 at `LOADTEST_RATE` req/s (default 100) for 10 s against `POST /evaluations/batch` (needs a local deploy). The 1000 req/s NFR run is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack |
+| `make test` | `turbo run test` — engine, lambdas, and stack. Then reaps Floci Lambda containers this stack left behind. |
+| `make loadtest` | k6 at `LOADTEST_RATE` req/s (default 100) for 10 s against `POST /evaluations/batch` (needs a local deploy). Always reaps Floci Lambda containers afterward (success or fail). The 1000 req/s NFR run is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack |
 | `make local-bootstrap` | CDK bootstrap on Floci account `000000000000` |
 | `make local-deploy` | `cdklocal deploy` |
 | `make api-url` | Prints the HTTP API base URL on the emulator |
 | `make synth` | `cdk synth` (template, no deploy) |
 | `make floci-up` / `floci-down` | Only the `floci` service from `.devcontainer/docker-compose.yml` (no-op inside the Dev Container) |
+| `make floci-reap` | Remove this stack's Floci Lambda containers (Evaluate/Worker/DlqConsumer). The floci sidecar stays up. |
 
 ## Layout
 

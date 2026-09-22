@@ -24,9 +24,10 @@ and the stack describe the cut.
 | `internal/adapter/httpapi` | HTTP API v2. Validates customers before calling a use case. Stores a single evaluation through `DecisionStore`. |
 | `internal/adapter/sqs` | Worker: consumes the queue and reports partial batch failures. |
 | `internal/adapter/dlq` | DLQ consumer: consumes the DLQ and reports partial batch failures. |
+| `internal/adapter/telemetry` | EMF logger: one JSON line per decision or failed item, no AWS SDK. |
 | `internal/adapter/sqspub` / `ddb` | `SendMessageBatch` publisher; both store ports on one DynamoDB table. |
-| `cmd/http` `cmd/worker` `cmd/dlq` | Composition root. |
-| `packages/infra-iac` | CDK: HTTP API, three Lambdas, SQS with its DLQ, DynamoDB, logs, alarms. |
+| `cmd/http` `cmd/worker` `cmd/dlq` | Composition root. JSON `slog` on stdout. |
+| `packages/infra-iac` | CDK: HTTP API with IAM authorizer except `/health`, three Lambdas, SQS with its DLQ, DynamoDB, logs, dashboard, alarms. |
 | `packages/loadtest` | k6 at `LOADTEST_RATE` req/s (default **100** locally) on `POST /evaluations/batch` for 10s. The 1000 req/s NFR run (10k jobs) is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack. |
 
 ## Runtime
@@ -50,7 +51,8 @@ flowchart LR
     dlqFn["Lambda DlqConsumer\nSQS batch 10, partial failures"]
     ddb[("DynamoDB\npk / sk")]
     logs["CloudWatch Logs\n14d"]
-    alarms["Alarms\nerrors and p99 > 800ms"]
+    alarms["Alarms\nAPI 5xx, worker, DLQ, p99"]
+    dash["Dashboard CreditCardEngine"]
   end
 
   subgraph core [apps/engine]
@@ -72,6 +74,7 @@ flowchart LR
   ev --> chain --> domain
   fn --> logs
   fn --> alarms
+  fn --> dash
 ```
 
 Two paths, on purpose:
@@ -203,6 +206,36 @@ never reads one item at a time.
   and no automatic cancel after the last attempt: cancelling is always an
   operator's call.
 
+## Observability
+
+Each Lambda logs JSON with `log/slog` on stdout. Keys are `snake_case`. A
+handler that returns a `5xx` logs the cause once at `error`, with no customer
+name or full CPF.
+
+Each recorded decision writes one CloudWatch Embedded Metric Format line in
+namespace `CreditCardEngine`. A batch item writes it only when
+`BatchStore.Decide` succeeds, so a redelivered message is not counted twice.
+
+| Metric | When | Dimensions |
+|---|---|---|
+| `Approved` | decision is approved | none |
+| `Denied` | decision is denied | none |
+| `DenyByReason` | decision is denied | `reason` |
+| `DecisionLatencyMs` | every recorded decision | none |
+| `ItemsFailed` | `BatchStore.Fail` moved the item to `FAILED` (DLQ consumer or a failed publish) | none |
+
+Decision line properties: `decision`, `reason`, `latency_ms`, `cpf_masked`,
+and either `decision_id` (sync) or `batch_id` and `index` (batch). Failed-item
+line properties: `batch_id`, `index`, `attempt`. Logs, EMF properties, and
+metric dimensions never include a customer name or a full CPF.
+
+The CloudWatch dashboard `CreditCardEngine` shows evaluations per minute,
+approval rate, `DenyByReason` by reason, `DecisionLatencyMs` p99, HTTP Lambda
+p99 duration, API 5xx, DLQ visible messages, and `ItemsFailed`. Alarms (missing
+data is not breaching): API Gateway 5xx ≥ 1 in 1 minute; worker errors ≥ 1 in
+1 minute; DLQ consumer errors ≥ 1 in 1 minute; DLQ visible messages > 0 for
+5 minutes; HTTP Lambda p99 > 800 ms for 3 minutes.
+
 ## Data model
 
 One DynamoDB table, `Decisions`, with generic keys `pk` (string) and `sk`
@@ -231,10 +264,12 @@ flowchart TB
   http["cmd/http"] --> httpapi["adapter/httpapi"]
   http --> ddbA["adapter/ddb"]
   http --> pub["adapter/sqspub"]
+  http --> tel["adapter/telemetry"]
   worker["cmd/worker"] --> sqs["adapter/sqs"]
   worker --> ddbA
   dlqCmd["cmd/dlq"] --> dlqA["adapter/dlq"]
   dlqCmd --> ddbA
+  dlqCmd --> tel
   dlqA --> markfailed
   markfailed --> queue
   markfailed --> store
@@ -243,12 +278,14 @@ flowchart TB
   httpapi --> report
   httpapi --> recovery
   httpapi --> store
+  httpapi --> tel
   recovery --> queue
   recovery --> store
   submit --> queue["queue"]
   submit --> store
   report --> store
   sqs --> job["processjob"]
+  sqs --> tel
   job --> evaluate
   job --> queue
   job --> store
@@ -349,8 +386,8 @@ new file plus one `SetNext` (or a new `AmountPolicy`) in `rules.NewPolicy()`.
 | **Accuracy** | Customers validated at the edge (CPF check digits, no negatives). Deterministic rules. Table tests in `domain`, `rules`, and `evaluate`. Stable reason code per rule. |
 | **Scale 10k/min** | NFR floor. The cut demonstrates **1000 req/s** on batch: HTTP enqueues (202), worker processes batch 10, Dynamo on-demand. Stage at 1200 rps / 2400 burst. k6: `LOADTEST_RATE=1000 make loadtest` against real AWS, 1000/s × 10s = 10k jobs (local default 100 req/s). |
 | **Extensibility** | `rules.Handler` + `rules.AmountPolicy`, assembled in `rules.NewPolicy()`. `architecture_test.go` keeps domain off AWS. |
-| **LGPD** | CPF masked on `Result`. Encryption at rest managed. IAM only on the decisions table. No API auth in this cut (fictional data); production would be IAM on the HTTP API. |
-| **Observability** | 14-day logs. Error and duration alarms. Dashboard for volume and p99. Reason codes in response JSON = deny rate per rule. |
+| **LGPD** | CPF masked on `Result` and in logs. Encryption at rest managed. IAM authorizer on every HTTP route except `/health`. Full CPF and name stay in DynamoDB and SQS. |
+| **Observability** | 14-day logs. One EMF line per decision (`Approved`/`Denied`, `DenyByReason`, `DecisionLatencyMs`) and per failed item (`ItemsFailed`). Dashboard `CreditCardEngine`. Alarms on API 5xx, worker errors, DLQ consumer errors, DLQ depth, and HTTP p99 > 800 ms. |
 | **Resilience** | The decision is pure. Persistence is after, and the sync path fails closed with `503`. On batch, SQS isolates HTTP from the worker: the worker reports partial batch failures, a record that fails 3 receives goes to the DLQ, and the DLQ consumer marks its item `FAILED` for an operator to retry or cancel. A failed publish marks the item `FAILED`, never leaves it `QUEUED`. Every transition is conditional. On-demand table. 5xx alarm on the sync path. |
 
 ## API
@@ -400,7 +437,7 @@ The report:
 | DynamoDB on-demand | instead of RDS | keys `pk` / `sk` (see Data model); batched writes on submit, one transaction per decided item; no connection |
 | AWS managed encryption | instead of CMK | a CMK does not change the case and costs more in the demo |
 | No VPC | — | an ENI on cold start blows the 1s SLO for no reason; the table does not need a private network |
-| No Cognito / authorizer | — | this cut is a simulation with fictional data |
+| IAM authorizer | every route except `GET /health` | SigV4 on `execute-api`; `/health` stays open for probes |
 | No SAM | — | one IaC, in the same language as the engine |
 | Worker + SQS | 1000 req/s batch | HTTP stores the items with `BatchWriteItem` and publishes with `SendMessageBatch`; the worker evaluates and decides the item. Batch size 10 with `ReportBatchItemFailures` |
 | `EvaluationJobsDLQ` | `maxReceiveCount=3`, 14-day retention | a record that keeps failing stops retrying and becomes a failed item (ADR 0001) |
@@ -423,4 +460,4 @@ curls: [`README.md`](../README.md).
 | RDS / Postgres | Latency and a connection pool for one Put per request. |
 | `httpadapter` + `net/http` | Hides the HTTP API contract. The wire types are the AWS events. |
 | Event sourcing / SNS / projectors | Closes none of the NFRs above. |
-| Cognito + WAF + custom domain | Production theater. The cut is the engine and the rationale. |
+| Cognito + WAF + custom domain | IAM auth is on the HTTP API. Cognito, WAF, and a custom domain remain out of scope. |

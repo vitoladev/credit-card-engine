@@ -7,11 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-lambda-go/events"
 
+	"engine/internal/adapter/telemetry"
 	"engine/internal/domain"
 	"engine/internal/evaluate"
 	"engine/internal/queue"
@@ -37,7 +40,8 @@ func New(ev evaluate.UseCase, decisions store.DecisionStore, sub submit.UseCase,
 func Default() Handler {
 	mem := store.NewMemory()
 	q := queue.NewMemory()
-	return New(evaluate.New(rules.NewPolicy()), mem, submit.New(mem, q, submit.DefaultBatchSize), report.New(mem), recovery.New(mem, q))
+	batches := telemetry.Observe(mem)
+	return New(evaluate.New(rules.NewPolicy()), mem, submit.New(batches, q, submit.DefaultBatchSize), report.New(mem), recovery.New(batches, q))
 }
 
 func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -99,12 +103,15 @@ func (h Handler) one(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 	if v := c.Validate(); len(v) > 0 {
 		return jsonResp(422, map[string]any{"error": "invalid_customer", "violations": v}), nil
 	}
+	start := time.Now()
 	r := h.evaluate.Execute(ctx, c)
 	id := newID()
 	// Fail closed (ADR 0001): a decision that was not recorded is not returned.
 	if err := h.decisions.Save(ctx, id, c, r); err != nil {
-		return jsonResp(503, map[string]string{"error": "decision_not_recorded"}), nil //nolint:nilerr // the adapter maps the error to a status code
+		log5xx(err)
+		return jsonResp(503, map[string]string{"error": "decision_not_recorded"}), nil
 	}
+	telemetry.Decision(r, time.Since(start), telemetry.IDs{DecisionID: id})
 	return jsonResp(200, decisionResponse{DecisionID: id, Result: r}), nil
 }
 
@@ -114,7 +121,8 @@ func (h Handler) decision(ctx context.Context, id string) (events.APIGatewayV2HT
 		return notFound(), nil
 	}
 	if err != nil {
-		return jsonResp(500, map[string]string{"error": "store_failed"}), nil //nolint:nilerr // the adapter maps the error to a status code
+		log5xx(err)
+		return jsonResp(500, map[string]string{"error": "store_failed"}), nil
 	}
 	return jsonResp(200, decisionResponse{DecisionID: id, Result: r}), nil
 }
@@ -138,10 +146,12 @@ func (h Handler) enqueue(ctx context.Context, req events.APIGatewayV2HTTPRequest
 		return jsonResp(422, map[string]any{"error": "batch_too_large", "max": h.submit.MaxCustomers()}), nil
 	}
 	if errors.Is(err, submit.ErrNotRecorded) {
+		log5xx(err)
 		return jsonResp(503, map[string]string{"error": "batch_not_recorded"}), nil
 	}
 	if err != nil {
-		return jsonResp(503, map[string]string{"error": "enqueue_failed"}), nil //nolint:nilerr // the adapter maps the error to a status code
+		log5xx(err)
+		return jsonResp(503, map[string]string{"error": "enqueue_failed"}), nil
 	}
 	return jsonResp(202, acc), nil
 }
@@ -197,8 +207,10 @@ func recoveryErr(err error) events.APIGatewayV2HTTPResponse {
 	case errors.Is(err, store.ErrMaxAttempts):
 		return jsonResp(409, map[string]string{"error": "max_attempts_reached"})
 	case errors.Is(err, recovery.ErrEnqueueFailed):
+		log5xx(err)
 		return jsonResp(503, map[string]string{"error": "enqueue_failed"})
 	default:
+		log5xx(err)
 		return jsonResp(503, map[string]string{"error": "store_failed"})
 	}
 }
@@ -209,7 +221,8 @@ func (h Handler) batchReport(ctx context.Context, id string) (events.APIGatewayV
 		return notFound(), nil
 	}
 	if err != nil {
-		return jsonResp(500, map[string]string{"error": "store_failed"}), nil //nolint:nilerr // the adapter maps the error to a status code
+		log5xx(err)
+		return jsonResp(500, map[string]string{"error": "store_failed"}), nil
 	}
 	return jsonResp(200, rep), nil
 }
@@ -247,6 +260,7 @@ func parseCustomers(body string) ([]domain.Customer, error) {
 func jsonResp(code int, v any) events.APIGatewayV2HTTPResponse {
 	b, err := json.Marshal(v)
 	if err != nil {
+		log5xx(err)
 		return events.APIGatewayV2HTTPResponse{
 			StatusCode: 500,
 			Headers:    map[string]string{"content-type": "application/json"},
@@ -258,4 +272,8 @@ func jsonResp(code int, v any) events.APIGatewayV2HTTPResponse {
 		Headers:    map[string]string{"content-type": "application/json"},
 		Body:       string(b),
 	}
+}
+
+func log5xx(err error) {
+	slog.Error("handler_failed", slog.String("error", err.Error()))
 }
