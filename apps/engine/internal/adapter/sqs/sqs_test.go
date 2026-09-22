@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-lambda-go/events"
 
@@ -22,19 +24,33 @@ var ana = domain.Customer{Name: "Ana", CPF: "39053344705", CreditScore: 780, Cre
 
 type discard struct{}
 
-func (discard) ItemDecided(string, int, domain.Result, time.Duration) {}
-func (discard) ItemFailed(string, int, int)                           {}
+func (discard) ItemDecided(string, string, domain.Result, time.Duration) {}
+func (discard) ItemFailed(string, string, int)                           {}
 
-// newBatch stores batch b1 with two items on Floci. The queue consumers never
-// publish, so the module has no Publisher.
-func newBatch(t *testing.T) (batch.Module, *flocitest.Faults) {
+// newBatch stores batch b1 with two items on Floci and returns their IDs. The
+// queue consumers never publish, so the module has no Publisher.
+func newBatch(t *testing.T) (batch.Module, *flocitest.Faults, [2]string) {
 	t.Helper()
 	cfg, faults := flocitest.Config(t)
 	st := ddb.New(cfg, flocitest.Table(t, cfg))
-	if err := st.Create(t.Context(), "b1", []domain.Customer{ana, ana}); err != nil {
+	ids := [2]string{uuid.NewV7().String(), uuid.NewV7().String()}
+	if err := st.Create(t.Context(), "b1", []batch.Item{{ID: ids[0], Customer: ana}, {ID: ids[1], Customer: ana}}); err != nil {
 		t.Fatal(err)
 	}
-	return batch.New(batch.Deps{Items: st, Policy: rules.NewPolicy(), Emitter: discard{}}), faults
+	return batch.New(batch.Deps{Items: st, Policy: rules.NewPolicy(), Emitter: discard{}}), faults, ids
+}
+
+func statuses(t *testing.T, b batch.Module) []batch.ItemStatus {
+	t.Helper()
+	list, err := b.ListItems(t.Context(), "b1", batch.ListQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := make([]batch.ItemStatus, len(list.Items))
+	for i, e := range list.Items {
+		out[i] = e.Status
+	}
+	return out
 }
 
 func record(t *testing.T, id string, a batch.Attempt) events.SQSMessage {
@@ -64,12 +80,12 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 }
 
 func TestWorkerReportsOnlyTheFailedRecords(t *testing.T) {
-	b, faults := newBatch(t)
+	b, faults, id := newBatch(t)
 	ev := events.SQSEvent{Records: []events.SQSMessage{
-		record(t, "a", batch.Attempt{BatchID: "b1", Index: 1, Number: 1, Customer: ana}), // the store fails
-		record(t, "b", batch.Attempt{BatchID: "b1", Index: 0, Number: 1, Customer: ana}), // decided
-		record(t, "c", batch.Attempt{BatchID: "b1", Index: 0, Number: 1, Customer: ana}), // redelivery
-		record(t, "d", batch.Attempt{BatchID: "nope", Index: 0, Number: 1, Customer: ana}),
+		record(t, "a", batch.Attempt{BatchID: "b1", ItemID: id[1], Number: 1, Customer: ana}), // the store fails
+		record(t, "b", batch.Attempt{BatchID: "b1", ItemID: id[0], Number: 1, Customer: ana}), // decided
+		record(t, "c", batch.Attempt{BatchID: "b1", ItemID: id[0], Number: 1, Customer: ana}), // redelivery
+		record(t, "d", batch.Attempt{BatchID: "nope", ItemID: id[0], Number: 1, Customer: ana}),
 		{MessageId: "e", Body: "not json"},
 	}}
 	faults.FailCalls("UpdateItem", 1)
@@ -80,21 +96,17 @@ func TestWorkerReportsOnlyTheFailedRecords(t *testing.T) {
 	if got := failures(resp); got != "a,d,e" {
 		t.Fatalf("failures=%s", got)
 	}
-	r, err := b.Report(t.Context(), "b1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.Counters != (batch.Counters{Queued: 1, Decided: 1}) {
-		t.Fatalf("%+v", r.Counters)
+	if got := statuses(t, b); !slices.Equal(got, []batch.ItemStatus{batch.Approved, batch.Queued}) {
+		t.Fatalf("statuses=%v", got)
 	}
 }
 
 func TestDeadLettersFailTheItemAndAcknowledgePoison(t *testing.T) {
-	b, faults := newBatch(t)
+	b, faults, id := newBatch(t)
 	ev := events.SQSEvent{Records: []events.SQSMessage{
-		record(t, "a", batch.Attempt{BatchID: "b1", Index: 0, Number: 1, Customer: ana}), // the store fails
-		record(t, "b", batch.Attempt{BatchID: "b1", Index: 1, Number: 1, Customer: ana}), // failed
-		record(t, "c", batch.Attempt{BatchID: "nope", Index: 0, Number: 1, Customer: ana}),
+		record(t, "a", batch.Attempt{BatchID: "b1", ItemID: id[0], Number: 1, Customer: ana}), // the store fails
+		record(t, "b", batch.Attempt{BatchID: "b1", ItemID: id[1], Number: 1, Customer: ana}), // failed
+		record(t, "c", batch.Attempt{BatchID: "nope", ItemID: id[0], Number: 1, Customer: ana}),
 		{MessageId: "d", Body: "not json"},
 	}}
 	faults.FailCalls("UpdateItem", 1)
@@ -105,12 +117,8 @@ func TestDeadLettersFailTheItemAndAcknowledgePoison(t *testing.T) {
 	if got := failures(resp); got != "a" {
 		t.Fatalf("failures=%s", got)
 	}
-	r, err := b.Report(t.Context(), "b1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if r.Counters != (batch.Counters{Queued: 1, Failed: 1}) {
-		t.Fatalf("%+v", r.Counters)
+	if got := statuses(t, b); !slices.Equal(got, []batch.ItemStatus{batch.Queued, batch.Failed}) {
+		t.Fatalf("statuses=%v", got)
 	}
 }
 
@@ -124,10 +132,10 @@ func TestFailedRecordsAreLoggedWithoutCustomerData(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			buf := captureLogs(t)
-			b, faults := newBatch(t)
+			b, faults, id := newBatch(t)
 			faults.FailCalls("UpdateItem", 1)
 			resp, err := tc.consumer(b).Handle(t.Context(), events.SQSEvent{Records: []events.SQSMessage{
-				record(t, "m1", batch.Attempt{BatchID: "b1", Index: 0, Number: 1, Customer: ana}),
+				record(t, "m1", batch.Attempt{BatchID: "b1", ItemID: id[0], Number: 1, Customer: ana}),
 			}})
 			if err != nil || failures(resp) != "m1" {
 				t.Fatalf("resp=%+v err=%v", resp, err)
@@ -136,7 +144,7 @@ func TestFailedRecordsAreLoggedWithoutCustomerData(t *testing.T) {
 			if !strings.Contains(logs, `"msg":"record_failed"`) || !strings.Contains(logs, `"message_id":"m1"`) {
 				t.Fatalf("missing record_failed:\n%s", logs)
 			}
-			if !strings.Contains(logs, `"batch_id":"b1"`) || !strings.Contains(logs, `"index":0`) {
+			if !strings.Contains(logs, `"batch_id":"b1"`) || !strings.Contains(logs, `"item_id":"`+id[0]+`"`) {
 				t.Fatalf("missing ids:\n%s", logs)
 			}
 			if strings.Contains(logs, "Ana") || strings.Contains(logs, "39053344705") {
@@ -148,7 +156,7 @@ func TestFailedRecordsAreLoggedWithoutCustomerData(t *testing.T) {
 
 func TestWorkerLogsAMalformedRecordWithoutItsBody(t *testing.T) {
 	buf := captureLogs(t)
-	b, _ := newBatch(t)
+	b, _, _ := newBatch(t)
 	body := `{"batch_id":"b1","customer":{"name":"Ana","cpf":"39053344705"`
 	resp, err := sqs.Worker(b).Handle(t.Context(), events.SQSEvent{Records: []events.SQSMessage{{MessageId: "m1", Body: body}}})
 	if err != nil || failures(resp) != "m1" {

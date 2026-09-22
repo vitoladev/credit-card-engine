@@ -35,29 +35,29 @@ func (EMF) Evaluated(decisionID string, r domain.Result, latency time.Duration) 
 }
 
 // ItemDecided writes the decision line of a batch item.
-func (EMF) ItemDecided(batchID string, index int, r domain.Result, latency time.Duration) {
-	decision(r, latency, ids{batchID: batchID, index: index})
+func (EMF) ItemDecided(batchID, itemID string, r domain.Result, latency time.Duration) {
+	decision(r, latency, ids{batchID: batchID, itemID: itemID})
 }
 
 // ItemFailed writes one ItemsFailed line for an item that moved to failed.
-func (EMF) ItemFailed(batchID string, index, attempt int) {
+func (EMF) ItemFailed(batchID, itemID string, attempt int) {
 	emit("item_failed", []metricSet{{
 		Namespace:  Namespace,
 		Dimensions: [][]string{},
 		Metrics:    []metricDef{{Name: "ItemsFailed", Unit: "Count"}},
 	}}, map[string]any{"ItemsFailed": 1}, []slog.Attr{
 		slog.String("batch_id", batchID),
-		slog.Int("index", index),
+		slog.String("item_id", itemID),
 		slog.Int("attempt", attempt),
 	})
 }
 
 // ids identifies a decision in EMF properties: a single evaluation by
-// decision_id, or a batch item by batch_id and index.
+// decision_id, or a batch item by batch_id and item_id.
 type ids struct {
 	decisionID string
 	batchID    string
-	index      int
+	itemID     string
 }
 
 func decision(r domain.Result, latency time.Duration, id ids) {
@@ -106,7 +106,7 @@ func decision(r domain.Result, latency time.Duration, id ids) {
 	if id.decisionID != "" {
 		props = append(props, slog.String("decision_id", id.decisionID))
 	} else {
-		props = append(props, slog.String("batch_id", id.batchID), slog.Int("index", id.index))
+		props = append(props, slog.String("batch_id", id.batchID), slog.String("item_id", id.itemID))
 	}
 	emit("decision", metrics, values, props)
 }

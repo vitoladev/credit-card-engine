@@ -134,7 +134,7 @@ func TestEvaluatedApprovalWritesOneApprovedLine(t *testing.T) {
 
 func TestItemDenialWritesDeniedAndDenyByReason(t *testing.T) {
 	buf := captureLogs(t)
-	telemetry.EMF{}.ItemDecided("b1", 0, domain.Result{
+	telemetry.EMF{}.ItemDecided("b1", "0198f3a2-7c1e-7b3a-9d2f-4e5a6b7c8d90", domain.Result{
 		Name: "Bruno", CPFMasked: "***09", Decision: domain.Denied, Reasons: []string{"score_below_600"},
 	}, time.Millisecond)
 	got := oneLine(t, buf)
@@ -144,7 +144,7 @@ func TestItemDenialWritesDeniedAndDenyByReason(t *testing.T) {
 	if !hasMetric(got, "DenyByReason") || got["DenyByReason"] != 1.0 || got["reason"] != "score_below_600" || !denyReasonDimension(got) {
 		t.Fatalf("%v", got)
 	}
-	if got["batch_id"] != "b1" || got["index"] != 0.0 || got["cpf_masked"] != "***09" {
+	if got["batch_id"] != "b1" || got["item_id"] != "0198f3a2-7c1e-7b3a-9d2f-4e5a6b7c8d90" || got["cpf_masked"] != "***09" {
 		t.Fatalf("%v", got)
 	}
 	if bytes.Contains(buf.Bytes(), []byte("Bruno")) {
@@ -154,9 +154,9 @@ func TestItemDenialWritesDeniedAndDenyByReason(t *testing.T) {
 
 func TestItemFailedWritesItemsFailed(t *testing.T) {
 	buf := captureLogs(t)
-	telemetry.EMF{}.ItemFailed("b1", 2, 3)
+	telemetry.EMF{}.ItemFailed("b1", "0198f3a2-7c1e-7b3a-9d2f-4e5a6b7c8d91", 3)
 	got := oneLine(t, buf)
-	if !hasMetric(got, "ItemsFailed") || got["ItemsFailed"] != 1.0 || got["batch_id"] != "b1" || got["index"] != 2.0 || got["attempt"] != 3.0 {
+	if !hasMetric(got, "ItemsFailed") || got["ItemsFailed"] != 1.0 || got["batch_id"] != "b1" || got["item_id"] != "0198f3a2-7c1e-7b3a-9d2f-4e5a6b7c8d91" || got["attempt"] != 3.0 {
 		t.Fatalf("%v", got)
 	}
 }

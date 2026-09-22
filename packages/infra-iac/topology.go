@@ -16,7 +16,7 @@ const (
 	tableID          = "Decisions"
 	alarmID          = "EvaluateAlarms"
 
-	// Generic keys: one table holds DECISION#, BATCH# META and ITEM# rows.
+	// Generic keys: one table holds DECISION# rows and BATCH# item rows.
 	tablePartitionKey = "pk"
 	tableSortKey      = "sk"
 

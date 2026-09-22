@@ -103,9 +103,9 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		{"/evaluations", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
 		{"/evaluations/{id}", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
 		{"/evaluations/batch", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
-		{"/batches/{id}/report", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
-		{"/batches/{id}/items/{index}/retry", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
-		{"/batches/{id}/items/{index}/cancel", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
+		{"/batches/{id}/items", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
+		{"/batches/{id}/items/{item_id}/retry", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
+		{"/batches/{id}/items/{item_id}/cancel", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
 		{"/batches/{id}/retry-failed", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_POST}},
 		{"/health", []awsapigatewayv2.HttpMethod{awsapigatewayv2.HttpMethod_GET}},
 	} {

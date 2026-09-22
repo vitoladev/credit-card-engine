@@ -55,7 +55,7 @@ func (c Consumer) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEve
 func failRecord(rec events.SQSMessage, err error, a batch.Attempt) {
 	attrs := []any{slog.String("message_id", rec.MessageId), slog.String("error", err.Error())}
 	if a.BatchID != "" {
-		attrs = append(attrs, slog.String("batch_id", a.BatchID), slog.Int("index", a.Index))
+		attrs = append(attrs, slog.String("batch_id", a.BatchID), slog.String("item_id", a.ItemID))
 	}
 	slog.Error("record_failed", attrs...)
 }

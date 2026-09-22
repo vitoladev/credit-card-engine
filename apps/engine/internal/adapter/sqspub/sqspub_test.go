@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -23,7 +24,7 @@ import (
 func attempts(n int) []batch.Attempt {
 	out := make([]batch.Attempt, n)
 	for i := range out {
-		out[i] = batch.Attempt{BatchID: "b1", Index: i, Number: 1, Customer: domain.Customer{Name: "Ana", CPF: "39053344705"}}
+		out[i] = batch.Attempt{BatchID: "b1", ItemID: uuid.NewV7().String(), Number: 1, Customer: domain.Customer{Name: "Ana", CPF: "39053344705"}}
 	}
 	return out
 }
@@ -31,30 +32,41 @@ func attempts(n int) []batch.Attempt {
 func TestPublishSendsEveryAttempt(t *testing.T) {
 	cfg, _ := flocitest.Config(t)
 	url := flocitest.Queue(t, cfg)
-	failed, err := sqspub.New(cfg, url).Publish(t.Context(), attempts(25))
+	sent := attempts(25)
+	failed, err := sqspub.New(cfg, url).Publish(t.Context(), sent)
 	if err != nil || len(failed) != 0 {
 		t.Fatalf("failed=%v err=%v", failed, err)
 	}
 
-	var got []int
+	var got []string
 	for _, a := range flocitest.Decode[batch.Attempt](t, flocitest.Receive(t, cfg, url)) {
 		if a.BatchID != "b1" || a.Number != 1 || a.Customer.CPF != "39053344705" {
 			t.Fatalf("%+v", a)
 		}
-		got = append(got, a.Index)
+		got = append(got, a.ItemID)
 	}
 	slices.Sort(got)
-	if len(got) != 25 || got[0] != 0 || got[24] != 24 {
+	if !slices.Equal(got, itemIDs(sent)) {
 		t.Fatalf("received %v", got)
 	}
 }
 
-func TestPublishReturnsEveryFailedIndex(t *testing.T) {
+func itemIDs(attempts []batch.Attempt) []string {
+	out := make([]string, len(attempts))
+	for i, a := range attempts {
+		out[i] = a.ItemID
+	}
+	return out
+}
+
+func TestPublishReturnsEveryFailedItem(t *testing.T) {
 	cfg, _ := flocitest.Config(t)
 	url := flocitest.Queue(t, cfg)
 	missing := url[:strings.LastIndex(url, "/")] + "/missing-queue"
-	failed, err := sqspub.New(cfg, missing).Publish(t.Context(), attempts(25))
-	if err == nil || len(failed) != 25 || failed[0] != 0 || failed[24] != 24 {
+	sent := attempts(25)
+	failed, err := sqspub.New(cfg, missing).Publish(t.Context(), sent)
+	slices.Sort(failed)
+	if err == nil || !slices.Equal(failed, itemIDs(sent)) {
 		t.Fatalf("failed=%v err=%v", failed, err)
 	}
 }
@@ -63,11 +75,13 @@ func TestPublishReturnsTheEntriesSQSRejected(t *testing.T) {
 	cfg, faults := flocitest.Config(t)
 	url := flocitest.Queue(t, cfg)
 	faults.DropEntries(2)
-	failed, err := sqspub.New(cfg, url).Publish(t.Context(), attempts(3))
-	if err == nil || !slices.Equal(failed, []int{0, 1}) {
+	sent := attempts(3)
+	failed, err := sqspub.New(cfg, url).Publish(t.Context(), sent)
+	slices.Sort(failed)
+	if err == nil || !slices.Equal(failed, itemIDs(sent[:2])) {
 		t.Fatalf("failed=%v err=%v", failed, err)
 	}
-	if got := flocitest.Decode[batch.Attempt](t, flocitest.Receive(t, cfg, url)); len(got) != 1 || got[0].Index != 2 {
+	if got := flocitest.Decode[batch.Attempt](t, flocitest.Receive(t, cfg, url)); len(got) != 1 || got[0].ItemID != sent[2].ItemID {
 		t.Fatalf("received %+v", got)
 	}
 }

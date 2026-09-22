@@ -39,9 +39,9 @@ func TestStackHasTheDayZeroSurface(t *testing.T) {
 		"POST /evaluations",
 		"GET /evaluations/{id}",
 		"POST /evaluations/batch",
-		"GET /batches/{id}/report",
-		"POST /batches/{id}/items/{index}/retry",
-		"POST /batches/{id}/items/{index}/cancel",
+		"GET /batches/{id}/items",
+		"POST /batches/{id}/items/{item_id}/retry",
+		"POST /batches/{id}/items/{item_id}/cancel",
 		"POST /batches/{id}/retry-failed",
 		"GET /health",
 	}
@@ -192,9 +192,9 @@ func TestStackHasIAMAuthorizerDashboardAndAlarms(t *testing.T) {
 		"POST /evaluations",
 		"GET /evaluations/{id}",
 		"POST /evaluations/batch",
-		"GET /batches/{id}/report",
-		"POST /batches/{id}/items/{index}/retry",
-		"POST /batches/{id}/items/{index}/cancel",
+		"GET /batches/{id}/items",
+		"POST /batches/{id}/items/{item_id}/retry",
+		"POST /batches/{id}/items/{item_id}/cancel",
 		"POST /batches/{id}/retry-failed",
 	}
 	for _, key := range protected {

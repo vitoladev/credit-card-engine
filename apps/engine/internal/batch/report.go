@@ -2,113 +2,86 @@ package batch
 
 import (
 	"context"
+	"encoding/base64"
+	"uuid"
 
 	"engine/internal/domain"
 )
 
-// Status is derived from the items on every read; it is never stored.
-type Status string
-
-const (
-	Processing     Status = "PROCESSING"
-	NeedsAttention Status = "NEEDS_ATTENTION"
-	Completed      Status = "COMPLETED"
-)
-
-type Counters struct {
-	Queued    int `json:"queued"`
-	Decided   int `json:"decided"`
-	Failed    int `json:"failed"`
-	Cancelled int `json:"cancelled"`
-}
-
 // Entry is one batch item as an operator sees it: masked CPF, never the full one.
 type Entry struct {
-	Index                int             `json:"index"`
-	Name                 string          `json:"name"`
-	CPFMasked            string          `json:"cpf_masked"`
-	Decision             domain.Decision `json:"decision,omitempty"`
-	Reasons              []string        `json:"reasons"`
-	RevolvingAmountCents int64           `json:"revolving_amount_cents"`
-	Attempts             int             `json:"attempts"`
+	ItemID               string     `json:"item_id"`
+	Name                 string     `json:"name"`
+	CPFMasked            string     `json:"cpf_masked"`
+	Status               ItemStatus `json:"status"`
+	Reasons              []string   `json:"reasons"`
+	RevolvingAmountCents int64      `json:"revolving_amount_cents"`
+	Attempts             int        `json:"attempts"`
 }
 
-type Report struct {
-	BatchID                   string   `json:"batch_id"`
-	Status                    Status   `json:"status"`
-	Counters                  Counters `json:"counters"`
-	Approved                  []Entry  `json:"approved"`
-	Denied                    []Entry  `json:"denied"`
-	Failed                    []Entry  `json:"failed"`
-	Cancelled                 []Entry  `json:"cancelled"`
-	TotalRevolvingAmountCents int64    `json:"total_revolving_amount_cents"`
+// ItemList is one page of a batch's items. NextCursor is empty on the last page.
+type ItemList struct {
+	BatchID    string  `json:"batch_id"`
+	Items      []Entry `json:"items"`
+	NextCursor string  `json:"next_cursor,omitempty"`
 }
 
-// Report reads every item of the batch and derives its status and totals.
-func (m Module) Report(ctx context.Context, batchID string) (Report, error) {
-	items, err := m.items.All(ctx, batchID)
+// ListQuery asks for one page of ListItems. An empty Status lists every
+// item. An empty Cursor starts at the first item.
+type ListQuery struct {
+	Status ItemStatus
+	Cursor string
+	Limit  int
+}
+
+// ListItems returns one page of the batch's items in submission order. It is
+// the batch report: each item carries its status and revolving amount, and
+// there are no batch-level counters or totals.
+func (m Module) ListItems(ctx context.Context, batchID string, q ListQuery) (ItemList, error) {
+	after, err := decodeCursor(q.Cursor)
 	if err != nil {
-		return Report{}, err
+		return ItemList{}, err
 	}
-	r := Report{
-		BatchID:   batchID,
-		Approved:  []Entry{},
-		Denied:    []Entry{},
-		Failed:    []Entry{},
-		Cancelled: []Entry{},
+	p, err := m.items.Page(ctx, batchID, PageQuery{Status: q.Status, After: after, Limit: q.Limit})
+	if err != nil {
+		return ItemList{}, err
 	}
-	for _, it := range items {
-		e := entryOf(it)
-		switch it.Status {
-		case Queued:
-			r.Counters.Queued++
-		case Decided:
-			r.Counters.Decided++
-			r.addDecided(e)
-		case Failed:
-			r.Counters.Failed++
-			r.Failed = append(r.Failed, e)
-		case Cancelled:
-			r.Counters.Cancelled++
-			r.Cancelled = append(r.Cancelled, e)
-		default:
-			panic("unhandled item status: " + string(it.Status))
-		}
+	list := ItemList{BatchID: batchID, Items: make([]Entry, len(p.Items))}
+	for i, it := range p.Items {
+		list.Items[i] = entryOf(it)
 	}
-	r.Status = statusOf(r.Counters)
-	return r, nil
+	if p.More && len(p.Items) > 0 {
+		list.NextCursor = base64.RawURLEncoding.EncodeToString([]byte(p.Items[len(p.Items)-1].ID))
+	}
+	return list, nil
 }
 
-func (r *Report) addDecided(e Entry) {
-	switch e.Decision {
-	case domain.Approved:
-		r.Approved = append(r.Approved, e)
-		r.TotalRevolvingAmountCents += e.RevolvingAmountCents
-	case domain.Denied:
-		r.Denied = append(r.Denied, e)
-	default:
-		panic("unhandled decision: " + e.Decision.String())
+// decodeCursor returns the item ID a cursor points after.
+func decodeCursor(cursor string) (string, error) {
+	if cursor == "" {
+		return "", nil
 	}
-}
-
-func statusOf(c Counters) Status {
-	switch {
-	case c.Queued > 0:
-		return Processing
-	case c.Failed > 0:
-		return NeedsAttention
-	default:
-		return Completed
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return "", ErrInvalidCursor
 	}
+	if _, err := uuid.Parse(string(raw)); err != nil {
+		return "", ErrInvalidCursor
+	}
+	return string(raw), nil
 }
 
 func entryOf(it Item) Entry {
+	reasons := it.Result.Reasons
+	if reasons == nil {
+		reasons = []string{}
+	}
 	return Entry{
-		Index:                it.Index,
+		ItemID:               it.ID,
 		Name:                 it.Customer.Name,
 		CPFMasked:            domain.MaskCPF(it.Customer.CPF),
-		Decision:             it.Result.Decision,
-		Reasons:              it.Result.Reasons,
+		Status:               it.Status,
+		Reasons:              reasons,
 		RevolvingAmountCents: it.Result.RevolvingAmountCents,
 		Attempts:             it.Attempts,
 	}

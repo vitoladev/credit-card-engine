@@ -30,14 +30,23 @@ var ErrInjected = errors.New("injected failure")
 type Faults struct {
 	mu      sync.Mutex
 	calls   map[string]int
+	skips   map[string]int
 	entries int
 }
 
 // FailCalls makes the next n calls of the operation fail with ErrInjected,
 // for example FailCalls("UpdateItem", 1).
 func (f *Faults) FailCalls(op string, n int) {
+	f.FailCallsAfter(op, 0, n)
+}
+
+// FailCallsAfter lets the next skip calls of the operation through, then fails
+// the n after them, for example FailCallsAfter("Query", 1, 1) to fail the
+// second page of a pagination.
+func (f *Faults) FailCallsAfter(op string, skip, n int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.skips[op] = skip
 	f.calls[op] = n
 }
 
@@ -53,6 +62,10 @@ func (f *Faults) takeCall(op string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.calls[op] == 0 {
+		return false
+	}
+	if f.skips[op] > 0 {
+		f.skips[op]--
 		return false
 	}
 	f.calls[op]--
@@ -87,7 +100,7 @@ func Config(t *testing.T) (aws.Config, *Faults) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &Faults{calls: map[string]int{}}
+	f := &Faults{calls: map[string]int{}, skips: map[string]int{}}
 	cfg.APIOptions = append(cfg.APIOptions, f.failCalls, f.dropEntries)
 	return cfg, f
 }

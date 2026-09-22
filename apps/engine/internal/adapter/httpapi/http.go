@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"uuid"
 
 	"github.com/aws/aws-lambda-go/events"
 
@@ -52,8 +53,8 @@ func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 	if id, ok := pathID(path, "/evaluations/", ""); ok {
 		return h.decision(ctx, id)
 	}
-	if id, ok := pathID(path, "/batches/", "/report"); ok {
-		return h.batchReport(ctx, id)
+	if id, ok := pathID(path, "/batches/", "/items"); ok {
+		return h.listItems(ctx, id, req.QueryStringParameters), nil
 	}
 	return notFound(), nil
 }
@@ -142,37 +143,37 @@ func (h Handler) recoverItems(ctx context.Context, path string) events.APIGatewa
 		}
 		return jsonResp(202, map[string]int{"requeued": n})
 	}
-	id, index, action, ok := itemPath(path)
+	id, itemID, action, ok := itemPath(path)
 	if !ok {
 		return notFound()
 	}
 	if action == "cancel" {
-		if err := h.batch.Cancel(ctx, id, index); err != nil {
+		if err := h.batch.Cancel(ctx, id, itemID); err != nil {
 			return recoveryErr(err)
 		}
-		return jsonResp(200, map[string]any{"index": index, "status": batch.Cancelled})
+		return jsonResp(200, map[string]any{"item_id": itemID, "status": batch.Cancelled})
 	}
-	attempts, err := h.batch.Retry(ctx, id, index)
+	attempts, err := h.batch.Retry(ctx, id, itemID)
 	if err != nil {
 		return recoveryErr(err)
 	}
-	return jsonResp(202, map[string]int{"index": index, "attempts": attempts})
+	return jsonResp(202, map[string]any{"item_id": itemID, "attempts": attempts})
 }
 
-// itemPath parses /batches/{id}/items/{index}/{retry|cancel}.
-func itemPath(path string) (id string, index int, action string, ok bool) {
+// itemPath parses /batches/{id}/items/{item_id}/{retry|cancel}. An item ID
+// that is not a UUID names no item, so it is a 404 before any store call.
+func itemPath(path string) (id, itemID, action string, ok bool) {
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	if len(parts) != 5 || parts[0] != "batches" || parts[1] == "" || parts[2] != "items" {
-		return "", 0, "", false
+		return "", "", "", false
 	}
 	if parts[4] != "retry" && parts[4] != "cancel" {
-		return "", 0, "", false
+		return "", "", "", false
 	}
-	index, err := strconv.Atoi(parts[3])
-	if err != nil || index < 0 {
-		return "", 0, "", false
+	if _, err := uuid.Parse(parts[3]); err != nil {
+		return "", "", "", false
 	}
-	return parts[1], index, parts[4], true
+	return parts[1], parts[3], parts[4], true
 }
 
 func recoveryErr(err error) events.APIGatewayV2HTTPResponse {
@@ -192,16 +193,34 @@ func recoveryErr(err error) events.APIGatewayV2HTTPResponse {
 	}
 }
 
-func (h Handler) batchReport(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
-	rep, err := h.batch.Report(ctx, id)
-	if errors.Is(err, batch.ErrNotFound) {
-		return notFound(), nil
+// listItems serves GET /batches/{id}/items?status=&limit=&cursor=.
+func (h Handler) listItems(ctx context.Context, id string, params map[string]string) events.APIGatewayV2HTTPResponse {
+	q := batch.ListQuery{Cursor: params["cursor"], Limit: batch.DefaultPageLimit}
+	if s, ok := params["status"]; ok {
+		st, ok := batch.ParseStatus(s)
+		if !ok {
+			return jsonResp(400, map[string]string{"error": "invalid_status"})
+		}
+		q.Status = st
 	}
-	if err != nil {
+	if s, ok := params["limit"]; ok {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 1 || n > batch.MaxPageLimit {
+			return jsonResp(400, map[string]any{"error": "invalid_limit", "max": batch.MaxPageLimit})
+		}
+		q.Limit = n
+	}
+	list, err := h.batch.ListItems(ctx, id, q)
+	switch {
+	case errors.Is(err, batch.ErrInvalidCursor):
+		return jsonResp(400, map[string]string{"error": "invalid_cursor"})
+	case errors.Is(err, batch.ErrNotFound):
+		return notFound()
+	case err != nil:
 		log5xx(err)
-		return jsonResp(500, map[string]string{"error": "store_failed"}), nil
+		return jsonResp(500, map[string]string{"error": "store_failed"})
 	}
-	return jsonResp(200, rep), nil
+	return jsonResp(200, list)
 }
 
 func notFound() events.APIGatewayV2HTTPResponse {

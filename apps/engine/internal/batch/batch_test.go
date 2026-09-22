@@ -1,7 +1,6 @@
 package batch_test
 
 import (
-	"cmp"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -10,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 
@@ -30,7 +30,7 @@ var threeCustomers = []domain.Customer{
 
 type itemEvent struct {
 	batchID string
-	index   int
+	itemID  string
 	attempt int
 	result  domain.Result
 }
@@ -42,16 +42,16 @@ type recorder struct {
 	failed  []itemEvent
 }
 
-func (r *recorder) ItemDecided(batchID string, index int, res domain.Result, _ time.Duration) {
+func (r *recorder) ItemDecided(batchID, itemID string, res domain.Result, _ time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.decided = append(r.decided, itemEvent{batchID: batchID, index: index, result: res})
+	r.decided = append(r.decided, itemEvent{batchID: batchID, itemID: itemID, result: res})
 }
 
-func (r *recorder) ItemFailed(batchID string, index, attempt int) {
+func (r *recorder) ItemFailed(batchID, itemID string, attempt int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.failed = append(r.failed, itemEvent{batchID: batchID, index: index, attempt: attempt})
+	r.failed = append(r.failed, itemEvent{batchID: batchID, itemID: itemID, attempt: attempt})
 }
 
 // harness is the batch module over DynamoDB and SQS on Floci. Tests read the
@@ -94,11 +94,12 @@ func (h *harness) submit(customers []domain.Customer) batch.Accepted {
 	return acc
 }
 
-// take receives every published attempt, ordered by index.
+// take receives every published attempt, in submission order: item IDs are
+// version 7 UUIDs, which sort in the order they were made.
 func (h *harness) take() []batch.Attempt {
 	h.t.Helper()
 	attempts := flocitest.Decode[batch.Attempt](h.t, flocitest.Receive(h.t, h.cfg, h.queue))
-	slices.SortFunc(attempts, func(x, y batch.Attempt) int { return cmp.Compare(x.Index, y.Index) })
+	slices.SortFunc(attempts, func(x, y batch.Attempt) int { return strings.Compare(x.ItemID, y.ItemID) })
 	return attempts
 }
 
@@ -128,29 +129,61 @@ func (h *harness) failThroughDLQ(a batch.Attempt) {
 	}
 }
 
-// failedBatch submits threeCustomers, fails item 0 through the DLQ, and
-// decides the other two.
-func (h *harness) failedBatch() (string, batch.Attempt) {
+// failedBatch submits threeCustomers, fails the first item through the DLQ,
+// and decides the other two.
+func (h *harness) failedBatch() (batch.Accepted, batch.Attempt) {
 	h.t.Helper()
 	acc := h.submit(threeCustomers)
 	attempts := h.take()
 	h.failThroughDLQ(attempts[0])
 	h.process(attempts[1:]...)
-	return acc.BatchID, attempts[0]
+	return acc, attempts[0]
 }
 
-func (h *harness) report(batchID string) batch.Report {
+// list reads every item of the batch, following the cursor across pages of
+// limit items.
+func (h *harness) list(batchID string, q batch.ListQuery) []batch.Entry {
 	h.t.Helper()
-	r, err := h.b.Report(h.t.Context(), batchID)
-	if err != nil {
-		h.t.Fatal(err)
+	var all []batch.Entry
+	for {
+		page, err := h.b.ListItems(h.t.Context(), batchID, q)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		if page.BatchID != batchID {
+			h.t.Fatalf("batch_id=%q", page.BatchID)
+		}
+		all = append(all, page.Items...)
+		if page.NextCursor == "" {
+			return all
+		}
+		q.Cursor = page.NextCursor
 	}
-	return r
 }
 
-func assertNoFullCPF(t *testing.T, r batch.Report) {
+func (h *harness) items(batchID string) []batch.Entry {
+	h.t.Helper()
+	return h.list(batchID, batch.ListQuery{Limit: batch.DefaultPageLimit})
+}
+
+func statuses(entries []batch.Entry) []batch.ItemStatus {
+	out := make([]batch.ItemStatus, len(entries))
+	for i, e := range entries {
+		out[i] = e.Status
+	}
+	return out
+}
+
+func wantStatuses(t *testing.T, entries []batch.Entry, want ...batch.ItemStatus) {
 	t.Helper()
-	body, err := json.Marshal(r)
+	if got := statuses(entries); !slices.Equal(got, want) {
+		t.Fatalf("statuses=%v want %v", got, want)
+	}
+}
+
+func assertNoFullCPF(t *testing.T, v any) {
+	t.Helper()
+	body, err := json.Marshal(v)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,28 +197,31 @@ func assertNoFullCPF(t *testing.T, r batch.Report) {
 func TestSubmittedBatchCompletes(t *testing.T) {
 	h := newHarness(t)
 	acc := h.submit(threeCustomers)
-	if acc.Queued != 3 {
+	if acc.Queued != 3 || len(acc.ItemIDs) != 3 || !slices.IsSorted(acc.ItemIDs) {
 		t.Fatalf("%+v", acc)
 	}
 	attempts := h.take()
 	if len(attempts) != 3 || attempts[0].Number != 1 || attempts[0].BatchID != acc.BatchID || attempts[0].Customer.CPF != "39053344705" {
 		t.Fatalf("%+v", attempts)
 	}
+	for i, a := range attempts {
+		if a.ItemID != acc.ItemIDs[i] {
+			t.Fatalf("attempt %d item_id=%s want %s", i, a.ItemID, acc.ItemIDs[i])
+		}
+	}
 	h.process(attempts...)
 
-	got := h.report(acc.BatchID)
-	if got.BatchID != acc.BatchID || got.Status != batch.Completed || got.Counters != (batch.Counters{Decided: 3}) {
-		t.Fatalf("%+v", got)
+	got := h.items(acc.BatchID)
+	wantStatuses(t, got, batch.Approved, batch.Denied, batch.Approved)
+	want := batch.Entry{ItemID: acc.ItemIDs[0], Name: "Ana", CPFMasked: "***05", Status: batch.Approved, Reasons: []string{"eligible"}, RevolvingAmountCents: 250_000, Attempts: 1}
+	if !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("items[0]=%+v", got[0])
 	}
-	if len(got.Approved) != 2 || len(got.Denied) != 1 || len(got.Failed) != 0 || len(got.Cancelled) != 0 || got.TotalRevolvingAmountCents != 1_050_000 {
-		t.Fatalf("%+v", got)
+	if d := got[1]; d.ItemID != acc.ItemIDs[1] || d.Reasons[0] != "score_below_600" || d.RevolvingAmountCents != 0 {
+		t.Fatalf("items[1]=%+v", d)
 	}
-	want := batch.Entry{Index: 0, Name: "Ana", CPFMasked: "***05", Decision: domain.Approved, Reasons: []string{"eligible"}, RevolvingAmountCents: 250_000, Attempts: 1}
-	if !reflect.DeepEqual(got.Approved[0], want) {
-		t.Fatalf("approved[0]=%+v", got.Approved[0])
-	}
-	if d := got.Denied[0]; d.Index != 1 || d.Reasons[0] != "score_below_600" || d.RevolvingAmountCents != 0 {
-		t.Fatalf("denied[0]=%+v", d)
+	if got[2].RevolvingAmountCents != 800_000 {
+		t.Fatalf("items[2]=%+v", got[2])
 	}
 	assertNoFullCPF(t, got)
 	if len(h.emit.decided) != 3 || len(h.emit.failed) != 0 {
@@ -193,25 +229,26 @@ func TestSubmittedBatchCompletes(t *testing.T) {
 	}
 }
 
-func TestReportBeforeProcessingIsProcessing(t *testing.T) {
+func TestItemsBeforeProcessingAreQueued(t *testing.T) {
 	h := newHarness(t)
 	acc := h.submit(threeCustomers)
-	got := h.report(acc.BatchID)
-	if got.Status != batch.Processing || got.Counters != (batch.Counters{Queued: 3}) || got.TotalRevolvingAmountCents != 0 {
-		t.Fatalf("%+v", got)
+	got := h.items(acc.BatchID)
+	wantStatuses(t, got, batch.Queued, batch.Queued, batch.Queued)
+	if got[0].Reasons == nil || len(got[0].Reasons) != 0 || got[0].RevolvingAmountCents != 0 {
+		t.Fatalf("items[0]=%+v", got[0])
 	}
 }
 
-func TestRedeliveryLeavesReportUnchangedAndEmitsOnce(t *testing.T) {
+func TestRedeliveryLeavesItemsUnchangedAndEmitsOnce(t *testing.T) {
 	h := newHarness(t)
 	acc := h.submit(threeCustomers)
 	attempts := h.take()
 	h.process(attempts...)
-	first := h.report(acc.BatchID)
+	first := h.items(acc.BatchID)
 
 	h.process(attempts...)
-	if second := h.report(acc.BatchID); !reflect.DeepEqual(first, second) {
-		t.Fatalf("report changed on redelivery:\n%+v\n%+v", first, second)
+	if second := h.items(acc.BatchID); !reflect.DeepEqual(first, second) {
+		t.Fatalf("items changed on redelivery:\n%+v\n%+v", first, second)
 	}
 	if len(h.emit.decided) != 3 {
 		t.Fatalf("decision events=%d", len(h.emit.decided))
@@ -244,40 +281,38 @@ func TestSubmitStoreFailurePublishesNothing(t *testing.T) {
 
 func TestFailedItemIsRetriedToCompletion(t *testing.T) {
 	h := newHarness(t)
-	id, _ := h.failedBatch()
+	acc, first := h.failedBatch()
+	id := acc.BatchID
 
-	got := h.report(id)
-	if got.Status != batch.NeedsAttention || got.Counters != (batch.Counters{Decided: 2, Failed: 1}) {
-		t.Fatalf("%+v", got)
+	got := h.items(id)
+	wantStatuses(t, got, batch.Failed, batch.Denied, batch.Approved)
+	if f := got[0]; f.ItemID != first.ItemID || f.CPFMasked != "***05" || f.Attempts != 1 || len(f.Reasons) != 0 {
+		t.Fatalf("items[0]=%+v", f)
 	}
-	if f := got.Failed[0]; f.Index != 0 || f.CPFMasked != "***05" || f.Attempts != 1 || f.Decision != "" {
-		t.Fatalf("failed[0]=%+v", f)
-	}
-	if len(h.emit.failed) != 1 || !reflect.DeepEqual(h.emit.failed[0], itemEvent{batchID: id, index: 0, attempt: 1}) {
+	if len(h.emit.failed) != 1 || !reflect.DeepEqual(h.emit.failed[0], itemEvent{batchID: id, itemID: first.ItemID, attempt: 1}) {
 		t.Fatalf("failed events=%+v", h.emit.failed)
 	}
 
-	attempt, err := h.b.Retry(t.Context(), id, 0)
+	attempt, err := h.b.Retry(t.Context(), id, first.ItemID)
 	if err != nil || attempt != 2 {
 		t.Fatalf("attempt=%d err=%v", attempt, err)
 	}
 	h.drain()
 
-	got = h.report(id)
-	if got.Status != batch.Completed || got.Counters != (batch.Counters{Decided: 3}) || got.TotalRevolvingAmountCents != 1_050_000 {
-		t.Fatalf("%+v", got)
-	}
-	if a := got.Approved[0]; a.Index != 0 || a.Attempts != 2 {
-		t.Fatalf("approved[0]=%+v", a)
+	got = h.items(id)
+	wantStatuses(t, got, batch.Approved, batch.Denied, batch.Approved)
+	if a := got[0]; a.ItemID != first.ItemID || a.Attempts != 2 || a.RevolvingAmountCents != 250_000 {
+		t.Fatalf("items[0]=%+v", a)
 	}
 	assertNoFullCPF(t, got)
 }
 
 func TestRetryAtMaxAttemptsIsRefused(t *testing.T) {
 	h := newHarness(t)
-	id, first := h.failedBatch()
+	acc, first := h.failedBatch()
+	id := acc.BatchID
 	for attempt := 2; attempt <= batch.MaxAttempts; attempt++ {
-		if _, err := h.b.Retry(t.Context(), id, 0); err != nil {
+		if _, err := h.b.Retry(t.Context(), id, first.ItemID); err != nil {
 			t.Fatal(err)
 		}
 		attempts := h.take()
@@ -287,10 +322,10 @@ func TestRetryAtMaxAttemptsIsRefused(t *testing.T) {
 		h.failThroughDLQ(attempts[0])
 	}
 
-	if got := h.report(id); got.Status != batch.NeedsAttention || got.Failed[0].Attempts != batch.MaxAttempts {
+	if got := h.items(id); got[0].Status != batch.Failed || got[0].Attempts != batch.MaxAttempts {
 		t.Fatalf("%+v", got)
 	}
-	if _, err := h.b.Retry(t.Context(), id, 0); !errors.Is(err, batch.ErrMaxAttempts) {
+	if _, err := h.b.Retry(t.Context(), id, first.ItemID); !errors.Is(err, batch.ErrMaxAttempts) {
 		t.Fatalf("err=%v", err)
 	}
 	if n, err := h.b.RetryFailed(t.Context(), id); n != 0 || err != nil {
@@ -301,44 +336,44 @@ func TestRetryAtMaxAttemptsIsRefused(t *testing.T) {
 	}
 }
 
-func TestCancelFailedItemIsIdempotentAndCompletesTheBatch(t *testing.T) {
+func TestCancelFailedItemIsIdempotent(t *testing.T) {
 	h := newHarness(t)
-	id, _ := h.failedBatch()
+	acc, first := h.failedBatch()
+	id := acc.BatchID
 	for range 2 {
-		if err := h.b.Cancel(t.Context(), id, 0); err != nil {
+		if err := h.b.Cancel(t.Context(), id, first.ItemID); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got := h.report(id)
-	if got.Status != batch.Completed || got.Counters != (batch.Counters{Decided: 2, Cancelled: 1}) {
-		t.Fatalf("%+v", got)
+	got := h.items(id)
+	wantStatuses(t, got, batch.Cancelled, batch.Denied, batch.Approved)
+	if got[0].ItemID != first.ItemID || got[0].CPFMasked != "***05" {
+		t.Fatalf("items[0]=%+v", got[0])
 	}
-	if len(got.Cancelled) != 1 || got.Cancelled[0].Index != 0 || got.Cancelled[0].CPFMasked != "***05" {
-		t.Fatalf("cancelled=%+v", got.Cancelled)
-	}
-	if _, err := h.b.Retry(t.Context(), id, 0); !errors.Is(err, batch.ErrInvalidTransition) {
+	if _, err := h.b.Retry(t.Context(), id, first.ItemID); !errors.Is(err, batch.ErrInvalidTransition) {
 		t.Fatalf("retry cancelled: err=%v", err)
 	}
 }
 
 func TestRetryOrCancelDecidedOrQueuedItemConflicts(t *testing.T) {
 	h := newHarness(t)
-	id, _ := h.failedBatch()
-	if _, err := h.b.Retry(t.Context(), id, 1); !errors.Is(err, batch.ErrInvalidTransition) {
+	acc, first := h.failedBatch()
+	id, decided := acc.BatchID, acc.ItemIDs[1]
+	if _, err := h.b.Retry(t.Context(), id, decided); !errors.Is(err, batch.ErrInvalidTransition) {
 		t.Fatalf("retry decided: err=%v", err)
 	}
-	if err := h.b.Cancel(t.Context(), id, 1); !errors.Is(err, batch.ErrInvalidTransition) {
+	if err := h.b.Cancel(t.Context(), id, decided); !errors.Is(err, batch.ErrInvalidTransition) {
 		t.Fatalf("cancel decided: err=%v", err)
 	}
 
 	// A second operator's retry of the same failed item loses the race.
-	if _, err := h.b.Retry(t.Context(), id, 0); err != nil {
+	if _, err := h.b.Retry(t.Context(), id, first.ItemID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.b.Retry(t.Context(), id, 0); !errors.Is(err, batch.ErrInvalidTransition) {
+	if _, err := h.b.Retry(t.Context(), id, first.ItemID); !errors.Is(err, batch.ErrInvalidTransition) {
 		t.Fatalf("second retry: err=%v", err)
 	}
-	if err := h.b.Cancel(t.Context(), id, 0); !errors.Is(err, batch.ErrInvalidTransition) {
+	if err := h.b.Cancel(t.Context(), id, first.ItemID); !errors.Is(err, batch.ErrInvalidTransition) {
 		t.Fatalf("cancel queued: err=%v", err)
 	}
 	if got := h.take(); len(got) != 1 {
@@ -350,13 +385,15 @@ func TestUnknownTargetsAreNotFound(t *testing.T) {
 	h := newHarness(t)
 	id := h.submit(threeCustomers).BatchID
 	ctx := t.Context()
+	unknown := uuid.NewV7().String()
 	for name, err := range map[string]error{
-		"retry unknown batch":        second(h.b.Retry(ctx, "nope", 0)),
-		"cancel unknown batch":       h.b.Cancel(ctx, "nope", 0),
-		"retry unknown index":        second(h.b.Retry(ctx, id, 3)),
-		"cancel unknown index":       h.b.Cancel(ctx, id, 3),
-		"retry-failed unknown batch": second(h.b.RetryFailed(ctx, "nope")),
-		"report unknown batch":       second(h.b.Report(ctx, "nope")),
+		"retry unknown batch":            second(h.b.Retry(ctx, "nope", unknown)),
+		"cancel unknown batch":           h.b.Cancel(ctx, "nope", unknown),
+		"retry unknown item":             second(h.b.Retry(ctx, id, unknown)),
+		"cancel unknown item":            h.b.Cancel(ctx, id, unknown),
+		"retry-failed unknown batch":     second(h.b.RetryFailed(ctx, "nope")),
+		"list unknown batch":             second(h.b.ListItems(ctx, "nope", batch.ListQuery{Limit: 10})),
+		"list unknown batch by a status": second(h.b.ListItems(ctx, "nope", batch.ListQuery{Status: batch.Failed, Limit: 10})),
 	} {
 		if !errors.Is(err, batch.ErrNotFound) {
 			t.Errorf("%s: err=%v", name, err)
@@ -373,24 +410,21 @@ func TestPublishFailuresOnSubmitAreFailedThenRetriedTogether(t *testing.T) {
 	if acc.Queued != 1 {
 		t.Fatalf("%+v", acc)
 	}
-	if got := h.report(acc.BatchID); got.Counters != (batch.Counters{Queued: 1, Failed: 2}) {
-		t.Fatalf("every queued item must have a message: %+v", got.Counters)
-	}
-	if len(h.emit.failed) != 2 || h.emit.failed[0].attempt != 1 {
+	// Every queued item must have a message behind it.
+	wantStatuses(t, h.items(acc.BatchID), batch.Failed, batch.Failed, batch.Queued)
+	if len(h.emit.failed) != 2 || h.emit.failed[0].attempt != 1 || h.emit.failed[0].itemID != acc.ItemIDs[0] {
 		t.Fatalf("failed events=%+v", h.emit.failed)
 	}
 	h.drain()
-	got := h.report(acc.BatchID)
-	if got.Status != batch.NeedsAttention || len(got.Failed) != 2 || got.Failed[0].Index != 0 || got.Failed[1].Index != 1 {
-		t.Fatalf("%+v", got)
-	}
+	wantStatuses(t, h.items(acc.BatchID), batch.Failed, batch.Failed, batch.Approved)
 
 	if n, err := h.b.RetryFailed(t.Context(), acc.BatchID); n != 2 || err != nil {
 		t.Fatalf("requeued=%d err=%v", n, err)
 	}
 	h.drain()
-	got = h.report(acc.BatchID)
-	if got.Status != batch.Completed || got.Counters != (batch.Counters{Decided: 3}) || got.Approved[0].Attempts != 2 {
+	got := h.items(acc.BatchID)
+	wantStatuses(t, got, batch.Approved, batch.Denied, batch.Approved)
+	if got[0].Attempts != 2 {
 		t.Fatalf("%+v", got)
 	}
 }
@@ -407,12 +441,10 @@ func TestRetryFailedCountsOnlyPublishedItems(t *testing.T) {
 	if n, err := h.b.RetryFailed(t.Context(), acc.BatchID); n != 2 || err != nil {
 		t.Fatalf("requeued=%d err=%v", n, err)
 	}
-	got := h.report(acc.BatchID)
-	if got.Counters != (batch.Counters{Queued: 2, Failed: 1}) || len(h.take()) != 2 {
-		t.Fatalf("%+v", got.Counters)
-	}
-	if f := got.Failed[0]; f.Index != 0 || f.Attempts != 2 {
-		t.Fatalf("failed=%+v", got.Failed)
+	got := h.items(acc.BatchID)
+	wantStatuses(t, got, batch.Failed, batch.Queued, batch.Queued)
+	if len(h.take()) != 2 || got[0].Attempts != 2 {
+		t.Fatalf("%+v", got)
 	}
 }
 
@@ -426,22 +458,29 @@ func TestRetryFailedReportsAStoreErrorAndPublishesWhatMoved(t *testing.T) {
 	if !errors.Is(err, flocitest.ErrInjected) {
 		t.Fatalf("err=%v", err)
 	}
-	got := h.report(acc.BatchID)
-	if published := len(h.take()); got.Counters.Queued != n || published != n || n > 2 {
-		t.Fatalf("requeued=%d published=%d counters=%+v", n, published, got.Counters)
+	queued := 0
+	for _, s := range statuses(h.items(acc.BatchID)) {
+		if s == batch.Queued {
+			queued++
+		}
+	}
+	if published := len(h.take()); queued != n || published != n || n > 2 {
+		t.Fatalf("requeued=%d published=%d queued=%d", n, published, queued)
 	}
 }
 
 func TestRetryPublishFailureFailsTheItemAgain(t *testing.T) {
 	h := newHarness(t)
-	id, _ := h.failedBatch()
+	acc, first := h.failedBatch()
+	id := acc.BatchID
 
 	h.faults.DropEntries(1)
-	if _, err := h.b.Retry(t.Context(), id, 0); !errors.Is(err, batch.ErrEnqueueFailed) {
+	if _, err := h.b.Retry(t.Context(), id, first.ItemID); !errors.Is(err, batch.ErrEnqueueFailed) {
 		t.Fatalf("err=%v", err)
 	}
-	got := h.report(id)
-	if got.Status != batch.NeedsAttention || got.Counters != (batch.Counters{Decided: 2, Failed: 1}) || got.Failed[0].Attempts != 2 {
+	got := h.items(id)
+	wantStatuses(t, got, batch.Failed, batch.Denied, batch.Approved)
+	if got[0].Attempts != 2 {
 		t.Fatalf("%+v", got)
 	}
 	if len(h.take()) != 0 {
@@ -460,8 +499,8 @@ func TestAttemptForAMissingItemIsDroppedByDeadLetter(t *testing.T) {
 	id := h.submit(threeCustomers).BatchID
 	attempts := h.take()
 	for _, a := range []batch.Attempt{
-		{BatchID: "nope", Index: 0, Number: 1, Customer: attempts[0].Customer},
-		{BatchID: id, Index: 99, Number: 1, Customer: attempts[0].Customer},
+		{BatchID: "nope", ItemID: attempts[0].ItemID, Number: 1, Customer: attempts[0].Customer},
+		{BatchID: id, ItemID: uuid.NewV7().String(), Number: 1, Customer: attempts[0].Customer},
 	} {
 		if err := h.b.Process(t.Context(), a); !errors.Is(err, batch.ErrNotFound) {
 			t.Fatalf("process %+v: err=%v", a, err)
@@ -476,8 +515,9 @@ func TestAttemptForAMissingItemIsDroppedByDeadLetter(t *testing.T) {
 	if err := h.b.DeadLetter(t.Context(), batch.Attempt{}); err != nil {
 		t.Fatalf("dead letter with no batch: err=%v", err)
 	}
-	if got := h.report(id); got.Counters != (batch.Counters{Queued: 3}) || len(h.emit.failed) != 0 {
-		t.Fatalf("%+v failed=%+v", got.Counters, h.emit.failed)
+	wantStatuses(t, h.items(id), batch.Queued, batch.Queued, batch.Queued)
+	if len(h.emit.failed) != 0 {
+		t.Fatalf("failed=%+v", h.emit.failed)
 	}
 }
 
@@ -502,9 +542,7 @@ func TestDeadLetterReportsAStoreFailureThenAcknowledges(t *testing.T) {
 	if err := h.b.DeadLetter(t.Context(), attempts[1]); err != nil {
 		t.Fatalf("decided: err=%v", err)
 	}
-	if got := h.report(id); got.Counters != (batch.Counters{Queued: 1, Decided: 1, Failed: 1}) {
-		t.Fatalf("%+v", got.Counters)
-	}
+	wantStatuses(t, h.items(id), batch.Failed, batch.Denied, batch.Queued)
 	if len(h.emit.failed) != 1 {
 		t.Fatalf("failed events=%+v", h.emit.failed)
 	}
@@ -527,5 +565,119 @@ func TestParseBatchSize(t *testing.T) {
 		if got != tc.want || (err == nil) != tc.ok {
 			t.Errorf("ParseBatchSize(%q) = %d, %v", tc.in, got, err)
 		}
+	}
+}
+
+// tenCustomers alternates Ana (approved) and Bruno (denied).
+func tenCustomers() []domain.Customer {
+	out := make([]domain.Customer, 10)
+	for i := range out {
+		out[i] = threeCustomers[i%2]
+	}
+	return out
+}
+
+func TestListItemsPagesInSubmissionOrder(t *testing.T) {
+	h := newHarness(t)
+	acc := h.submit(tenCustomers())
+	h.drain()
+
+	var ids []string
+	q := batch.ListQuery{Limit: 3}
+	for pages := 1; ; pages++ {
+		page, err := h.b.ListItems(t.Context(), acc.BatchID, q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) > 3 {
+			t.Fatalf("page %d has %d items", pages, len(page.Items))
+		}
+		for _, e := range page.Items {
+			ids = append(ids, e.ItemID)
+		}
+		if page.NextCursor == "" {
+			if pages != 4 {
+				t.Fatalf("pages=%d", pages)
+			}
+			break
+		}
+		q.Cursor = page.NextCursor
+	}
+	if !slices.Equal(ids, acc.ItemIDs) {
+		t.Fatalf("ids=%v\nwant %v", ids, acc.ItemIDs)
+	}
+}
+
+// Query's Limit counts rows before the status filter. A filtered page is still
+// full as long as enough items match.
+func TestListItemsByStatusFillsEachPage(t *testing.T) {
+	h := newHarness(t)
+	acc := h.submit(tenCustomers())
+	h.drain()
+
+	page, err := h.b.ListItems(t.Context(), acc.BatchID, batch.ListQuery{Status: batch.Denied, Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 2 || page.NextCursor == "" {
+		t.Fatalf("%+v", page)
+	}
+	denied := h.list(acc.BatchID, batch.ListQuery{Status: batch.Denied, Limit: 2})
+	var want []string
+	for i, id := range acc.ItemIDs {
+		if i%2 == 1 {
+			want = append(want, id)
+		}
+	}
+	var got []string
+	for _, e := range denied {
+		if e.Status != batch.Denied {
+			t.Fatalf("%+v", e)
+		}
+		got = append(got, e.ItemID)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("denied=%v\nwant %v", got, want)
+	}
+}
+
+// A batch with no item in a status lists nothing; it is not an unknown batch.
+func TestListItemsWithNoMatchIsEmptyNotNotFound(t *testing.T) {
+	h := newHarness(t)
+	acc := h.submit(threeCustomers)
+	page, err := h.b.ListItems(t.Context(), acc.BatchID, batch.ListQuery{Status: batch.Cancelled, Limit: 10})
+	if err != nil || len(page.Items) != 0 || page.NextCursor != "" {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+	body, err := json.Marshal(page)
+	if err != nil || !strings.Contains(string(body), `"items":[]`) {
+		t.Fatalf("body=%s err=%v", body, err)
+	}
+}
+
+func TestListItemsRejectsACursorItDidNotIssue(t *testing.T) {
+	h := newHarness(t)
+	acc := h.submit(threeCustomers)
+	for _, cursor := range []string{"not base64!", "bm90LWEtdXVpZA"} {
+		if _, err := h.b.ListItems(t.Context(), acc.BatchID, batch.ListQuery{Cursor: cursor, Limit: 10}); !errors.Is(err, batch.ErrInvalidCursor) {
+			t.Fatalf("cursor %q: err=%v", cursor, err)
+		}
+	}
+}
+
+// A store failure while reading the failed items stops RetryFailed before
+// any item moves.
+func TestRetryFailedStopsOnAFailedRead(t *testing.T) {
+	h := newHarness(t)
+	h.faults.DropEntries(3)
+	acc := h.submit(threeCustomers)
+
+	h.faults.FailCalls("Query", 1)
+	if _, err := h.b.RetryFailed(t.Context(), acc.BatchID); !errors.Is(err, flocitest.ErrInjected) {
+		t.Fatalf("err=%v", err)
+	}
+	wantStatuses(t, h.items(acc.BatchID), batch.Failed, batch.Failed, batch.Failed)
+	if len(h.take()) != 0 {
+		t.Fatal("published after a failed read")
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"slices"
-	"strconv"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -33,10 +32,10 @@ func New(cfg aws.Config, queueURL string) *Publisher {
 
 // Publish sends the attempts in chunks of 10, several chunks at once. A chunk that
 // fails as a whole fails every attempt in it.
-func (p *Publisher) Publish(ctx context.Context, attempts []batch.Attempt) ([]int, error) {
+func (p *Publisher) Publish(ctx context.Context, attempts []batch.Attempt) ([]string, error) {
 	var (
 		mu     sync.Mutex
-		failed []int
+		failed []string
 		errs   []error
 		wg     sync.WaitGroup
 	)
@@ -61,16 +60,16 @@ func (p *Publisher) Publish(ctx context.Context, attempts []batch.Attempt) ([]in
 	return failed, errors.Join(errs...)
 }
 
-func (p *Publisher) send(ctx context.Context, chunk []batch.Attempt) ([]int, error) {
+func (p *Publisher) send(ctx context.Context, chunk []batch.Attempt) ([]string, error) {
 	trace := traceHeader()
 	entries := make([]types.SendMessageBatchRequestEntry, 0, len(chunk))
 	for _, a := range chunk {
 		body, err := json.Marshal(a)
 		if err != nil {
-			return indexes(chunk), err
+			return itemIDs(chunk), err
 		}
 		entries = append(entries, types.SendMessageBatchRequestEntry{
-			Id:                      new(strconv.Itoa(a.Index)),
+			Id:                      new(a.ItemID),
 			MessageBody:             new(string(body)),
 			MessageSystemAttributes: trace,
 		})
@@ -80,26 +79,23 @@ func (p *Publisher) send(ctx context.Context, chunk []batch.Attempt) ([]int, err
 		Entries:  entries,
 	})
 	if err != nil {
-		return indexes(chunk), fmt.Errorf("send message batch: %w", err)
+		return itemIDs(chunk), fmt.Errorf("send message batch: %w", err)
 	}
 	if len(out.Failed) == 0 {
 		return nil, nil
 	}
-	failed := make([]int, 0, len(out.Failed))
-	for _, f := range out.Failed {
-		i, err := strconv.Atoi(aws.ToString(f.Id))
-		if err != nil {
-			return indexes(chunk), fmt.Errorf("unexpected entry id %q: %w", aws.ToString(f.Id), err)
-		}
-		failed = append(failed, i)
+	failed := make([]string, len(out.Failed))
+	for i, f := range out.Failed {
+		failed[i] = aws.ToString(f.Id)
 	}
 	return failed, fmt.Errorf("send message batch: %d entries failed, first code %s", len(out.Failed), aws.ToString(out.Failed[0].Code))
 }
 
-func indexes(attempts []batch.Attempt) []int {
-	out := make([]int, len(attempts))
+// itemIDs is also each entry's Id: SendMessageBatch reports failures by it.
+func itemIDs(attempts []batch.Attempt) []string {
+	out := make([]string, len(attempts))
 	for i, a := range attempts {
-		out[i] = a.Index
+		out[i] = a.ItemID
 	}
 	return out
 }
