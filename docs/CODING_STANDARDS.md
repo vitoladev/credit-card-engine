@@ -108,8 +108,7 @@ commit and says why.
 - Infra changes are asserted in the CDK stack test.
 - A slice that changes runtime behavior is also run against local Floci
   through the Dev Container, and a change on the batch path runs the k6 load
-  test (`make loadtest`, 100 req/s on Floci; the 1000 req/s NFR run is
-  `LOADTEST_RATE=1000 make loadtest` against a real AWS stack).
+  test (`make loadtest`, 100 req/s).
 
 ## 9. Infra (`packages/infra-iac`)
 
