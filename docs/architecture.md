@@ -65,10 +65,10 @@ flowchart LR
   fn -->|"DECISION# / RESULT"| ddb
   batch --> api --> fn -->|"BatchWriteItem META + ITEM#"| ddb
   fn -->|SendMessageBatch| q --> worker --> ev
-  worker -->|"TransactWriteItems QUEUED → DECIDED"| ddb
+  worker -->|"UpdateItem QUEUED → DECIDED"| ddb
   q -->|"maxReceiveCount 3"| dlq --> dlqFn
-  dlqFn -->|"TransactWriteItems QUEUED → FAILED"| ddb
-  recover --> api --> fn -->|"TransactWriteItems FAILED → QUEUED / CANCELLED"| ddb
+  dlqFn -->|"UpdateItem QUEUED → FAILED"| ddb
+  recover --> api --> fn -->|"UpdateItem FAILED → QUEUED / CANCELLED"| ddb
   getOne --> api
   getReport --> api
   ev --> chain --> domain
@@ -104,10 +104,10 @@ at startup on one as well. `scripts/floci.env` defaults it to 100 so local runs
 stay light; raise it with `BATCH_SIZE=1000 make local-deploy`. Otherwise `submit`:
 
 1. creates a `batch_id`;
-2. stores `META` (`queued=N`, `decided=0`, `failed=0`, `cancelled=0`) and one
-   `ITEM#<index>` per customer (`status=QUEUED`, `attempts=1`, the customer
-   input) with `BatchWriteItem`, 25 items per call, 8 calls in flight, and
-   `UnprocessedItems` retried with backoff. A failed write queries the batch
+2. stores `META` (`size=N`) and one `ITEM#<index>` per customer
+   (`status=QUEUED`, `attempts=1`, the customer input) with `BatchWriteItem`,
+   25 items per call, 8 calls in flight, and `UnprocessedItems` retried with
+   backoff. A failed write queries the batch
    partition and deletes leftover rows so a retry does not hit half-written
    keys;
 3. publishes one message per item, `{batch_id, index, attempt, customer}`,
@@ -130,16 +130,16 @@ publish costs one `Fail` per item.
 ### Batch item status
 
 The worker evaluates the message and calls
-`BatchStore.Decide(batch_id, index, attempt, result)`. One DynamoDB transaction
-(`TransactWriteItems`) moves the item from `QUEUED` to `DECIDED`, stores the
-result, and updates `META` (`queued−1`, `decided+1`), only if the item is
-`QUEUED` on the same attempt. A repeated delivery fails that condition, gets
+`BatchStore.Decide(batch_id, index, attempt, result)`. One conditional
+`UpdateItem` moves the item from `QUEUED` to `DECIDED` and stores the result,
+only if the item is `QUEUED` on the same attempt. A repeated delivery fails that condition, gets
 `ErrInvalidTransition`, and the worker treats it as success: the item is
 decided once and the total is not inflated.
 
-Every transition is one `TransactWriteItems`: the item update, conditional on
-its current status (and attempt where it applies), plus the `META` counters of
-both statuses. Two operators, or an operator and a late delivery, cannot both
+Every transition is one `UpdateItem` on the item's own row, conditional on its
+current status (and attempt where it applies). No transition writes `META` or
+any other shared row, so workers deciding items of one batch in parallel never
+contend on a single item or transaction. Two operators, or an operator and a late delivery, cannot both
 win a transition. The memory store checks the same conditions under a lock.
 
 ```mermaid
@@ -154,18 +154,19 @@ stateDiagram-v2
   CANCELLED --> [*]
 ```
 
-| Transition | Called by | Condition | Counters |
+| Transition | Called by | Condition | Update |
 |---|---|---|---|
-| `Decide(batch_id, index, attempt, result)` | worker | `QUEUED` on `attempt` | `queued−1`, `decided+1` |
-| `Fail(batch_id, index, attempt)` | DLQ consumer, `submit` and `recovery` after a failed publish | `QUEUED` on `attempt` | `queued−1`, `failed+1` |
-| `Retry(batch_id, index, attempt)` | `recovery` | `FAILED` on `attempt`, `attempts < 5` | `failed−1`, `queued+1`; `attempts+1` |
-| `Cancel(batch_id, index)` | `recovery` | `FAILED`; already `CANCELLED` succeeds with no change | `failed−1`, `cancelled+1` |
+| `Decide(batch_id, index, attempt, result)` | worker | `QUEUED` on `attempt` | `status=DECIDED`, `result` |
+| `Fail(batch_id, index, attempt)` | DLQ consumer, `submit` and `recovery` after a failed publish | `QUEUED` on `attempt` | `status=FAILED` |
+| `Retry(batch_id, index, attempt)` | `recovery` | `FAILED` on `attempt`, `attempts < 5` | `status=QUEUED`, `attempts+1` |
+| `Cancel(batch_id, index)` | `recovery` | `FAILED`; already `CANCELLED` succeeds with no change | `status=CANCELLED` |
 
 A retry's message carries the new attempt. A late message for an older attempt
 fails the `Decide` condition, so only the current attempt can decide the item.
 A failed item keeps its attempts, so the report shows how many passes it took.
 
-The batch status is derived from the `META` counters on every read, never
+The counters (`queued`, `decided`, `failed`, `cancelled`) are counted from the
+items on every read, and the batch status is derived from them. Neither is
 stored:
 
 | Batch status | When |
@@ -202,9 +203,8 @@ never reads one item at a time.
   moves the item back to `FAILED` (the attempt stays counted) and returns
   `503 {"error":"enqueue_failed"}`. `POST /batches/{id}/retry-failed` finds
   the failed items with one paginated `Query` (filtered to `META` and `FAILED`
-  items), moves them `FAILED → QUEUED` with `RetryMany` (up to 50 item updates
-  plus one `META` `ADD` per `TransactWriteItems`; a cancelled transaction
-  falls back per item), and publishes them together with `SendMessageBatch`
+  items), moves them `FAILED → QUEUED` with `RetryMany` (one conditional
+  `UpdateItem` per item, 8 in flight), and publishes them together with `SendMessageBatch`
   in chunks of 10. Items whose publish failed go back to `FAILED` and are not
   counted in `requeued`. There is no whole-batch cancel and no automatic
   cancel after the last attempt: cancelling is always an operator's call.
@@ -255,7 +255,7 @@ One DynamoDB table, `Decisions`, with generic keys `pk` (string) and `sk`
 | `pk` | `sk` | Attributes |
 |---|---|---|
 | `DECISION#<decision_id>` | `RESULT` | `customer` (input JSON), `result` (decision JSON) |
-| `BATCH#<batch_id>` | `META` | `queued`, `decided`, `failed`, `cancelled` |
+| `BATCH#<batch_id>` | `META` | `size` (item count); written once, marks the batch as existing |
 | `BATCH#<batch_id>` | `ITEM#<index>` | `index`, `customer` (input JSON), `status`, `attempts`, `result` once decided |
 
 The input and the item status live in one item, so there is no separate input

@@ -43,6 +43,25 @@ type Counters struct {
 	Cancelled int `json:"cancelled"`
 }
 
+// Count tallies items by status. Counters are derived from the items on every
+// read, never stored, so a transition writes only its own item.
+func Count(items []Item) Counters {
+	var c Counters
+	for _, it := range items {
+		switch it.Status {
+		case Queued:
+			c.Queued++
+		case Decided:
+			c.Decided++
+		case Failed:
+			c.Failed++
+		case Cancelled:
+			c.Cancelled++
+		}
+	}
+	return c
+}
+
 // Batch is everything stored for one batch. Items are ordered by index.
 type Batch struct {
 	ID       string
@@ -54,8 +73,8 @@ type Batch struct {
 type BatchStore interface {
 	// Create stores every customer as a queued item with its first attempt.
 	Create(ctx context.Context, batchID string, customers []domain.Customer) error
-	// Decide moves a queued item on the given attempt to decided and updates
-	// the counters atomically. Any other state returns ErrInvalidTransition.
+	// Decide moves a queued item on the given attempt to decided. Any other
+	// state returns ErrInvalidTransition.
 	Decide(ctx context.Context, batchID string, index, attempt int, r domain.Result) error
 	// Fail moves a queued item on the given attempt to failed.
 	Fail(ctx context.Context, batchID string, index, attempt int) error
@@ -72,6 +91,7 @@ type BatchStore interface {
 	Item(ctx context.Context, batchID string, index int) (Item, error)
 	// Failed returns the batch's failed items, ErrNotFound for an unknown batch.
 	Failed(ctx context.Context, batchID string) ([]Item, error)
+	// Report returns every item and the counters derived from them.
 	Report(ctx context.Context, batchID string) (Batch, error)
 }
 
@@ -140,7 +160,7 @@ func (m *Memory) Create(_ context.Context, batchID string, customers []domain.Cu
 	if err := m.injected(); err != nil {
 		return err
 	}
-	b := &Batch{ID: batchID, Counters: Counters{Queued: len(customers)}, Items: make([]Item, len(customers))}
+	b := &Batch{ID: batchID, Items: make([]Item, len(customers))}
 	for i, c := range customers {
 		b.Items[i] = Item{Index: i, Customer: c, Status: Queued, Attempts: 1}
 	}
@@ -148,23 +168,23 @@ func (m *Memory) Create(_ context.Context, batchID string, customers []domain.Cu
 	return nil
 }
 
-// item returns the batch and item to transition, after the injected failure
-// check a real write would hit. The caller holds mu.
-func (m *Memory) item(batchID string, index int) (*Batch, *Item, error) {
+// item returns the item to transition, after the injected failure check a
+// real write would hit. The caller holds mu.
+func (m *Memory) item(batchID string, index int) (*Item, error) {
 	if err := m.injected(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	b, ok := m.batches[batchID]
 	if !ok || index < 0 || index >= len(b.Items) {
-		return nil, nil, ErrNotFound
+		return nil, ErrNotFound
 	}
-	return b, &b.Items[index], nil
+	return &b.Items[index], nil
 }
 
 func (m *Memory) Decide(_ context.Context, batchID string, index, attempt int, r domain.Result) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	b, it, err := m.item(batchID, index)
+	it, err := m.item(batchID, index)
 	if err != nil {
 		return err
 	}
@@ -173,15 +193,13 @@ func (m *Memory) Decide(_ context.Context, batchID string, index, attempt int, r
 	}
 	it.Status = Decided
 	it.Result = r
-	b.Counters.Queued--
-	b.Counters.Decided++
 	return nil
 }
 
 func (m *Memory) Fail(_ context.Context, batchID string, index, attempt int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	b, it, err := m.item(batchID, index)
+	it, err := m.item(batchID, index)
 	if err != nil {
 		return err
 	}
@@ -189,15 +207,13 @@ func (m *Memory) Fail(_ context.Context, batchID string, index, attempt int) err
 		return ErrInvalidTransition
 	}
 	it.Status = Failed
-	b.Counters.Queued--
-	b.Counters.Failed++
 	return nil
 }
 
 func (m *Memory) Retry(_ context.Context, batchID string, index, attempt int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	b, it, err := m.item(batchID, index)
+	it, err := m.item(batchID, index)
 	if err != nil {
 		return err
 	}
@@ -209,8 +225,6 @@ func (m *Memory) Retry(_ context.Context, batchID string, index, attempt int) er
 	}
 	it.Status = Queued
 	it.Attempts++
-	b.Counters.Failed--
-	b.Counters.Queued++
 	return nil
 }
 
@@ -235,7 +249,7 @@ func (m *Memory) RetryMany(ctx context.Context, batchID string, items []Item) ([
 func (m *Memory) Cancel(_ context.Context, batchID string, index int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	b, it, err := m.item(batchID, index)
+	it, err := m.item(batchID, index)
 	if err != nil {
 		return err
 	}
@@ -244,8 +258,6 @@ func (m *Memory) Cancel(_ context.Context, batchID string, index int) error {
 		return nil
 	case Failed:
 		it.Status = Cancelled
-		b.Counters.Failed--
-		b.Counters.Cancelled++
 		return nil
 	default:
 		return ErrInvalidTransition
@@ -287,6 +299,7 @@ func (m *Memory) Report(_ context.Context, batchID string) (Batch, error) {
 	}
 	out := *b
 	out.Items = append([]Item(nil), b.Items...)
+	out.Counters = Count(out.Items)
 	return out, nil
 }
 

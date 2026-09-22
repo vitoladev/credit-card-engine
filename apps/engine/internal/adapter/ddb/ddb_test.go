@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -280,7 +281,7 @@ func TestRetryManyMovesFailedItems(t *testing.T) {
 	}
 }
 
-func TestRetryManyMovesAFullChunk(t *testing.T) {
+func TestRetryManyMovesManyItems(t *testing.T) {
 	st := newStore(t)
 	ctx := t.Context()
 	n := 51
@@ -309,6 +310,37 @@ func TestRetryManyMovesAFullChunk(t *testing.T) {
 		t.Fatal(err)
 	}
 	if b.Counters != (store.Counters{Queued: n}) {
+		t.Fatalf("counters=%+v", b.Counters)
+	}
+}
+
+// Workers decide items of one batch in parallel. Each transition writes only
+// its own item, so none of them conflicts with another.
+func TestConcurrentDecidesOnOneBatch(t *testing.T) {
+	st := newStore(t)
+	ctx := t.Context()
+	n := 200
+	customers := make([]domain.Customer, n)
+	for i := range customers {
+		customers[i] = domain.Customer{Name: "Ana", CPF: "39053344705"}
+	}
+	if err := st.Create(ctx, "b1", customers); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	for i := range n {
+		wg.Go(func() { errs[i] = st.Decide(ctx, "b1", i, 1, domain.Result{Decision: domain.Approved}) })
+	}
+	wg.Wait()
+	if err := errors.Join(errs...); err != nil {
+		t.Fatal(err)
+	}
+	b, err := st.Report(ctx, "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.Counters != (store.Counters{Decided: n}) {
 		t.Fatalf("counters=%+v", b.Counters)
 	}
 }
