@@ -4,6 +4,9 @@ status: accepted
 
 # Fail closed, and let operators recover failed batch items
 
+> Partly superseded by [ADR 0003](0003-list-batch-items-by-page.md): items
+> are keyed by `item_id`, not by index, and a batch has no status.
+
 A credit decision that is not recorded cannot be audited, so a single
 evaluation returns `503` when the decision cannot be persisted, even though the
 rules already produced a result. In a batch, a batch item that still fails after

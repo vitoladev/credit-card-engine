@@ -1,6 +1,6 @@
 # Architecture
 
-A revolving-credit evaluation. The cut is the rules engine, the report, and
+A revolving-credit evaluation. The cut is the rules engine, the batch item list, and
 the AWS infra that backs the criteria.
 
 IaC is CDK in Go (`packages/infra-iac/`). The product lives in
@@ -14,7 +14,7 @@ and the stack describe the cut.
 | `internal/domain` | Customer profile, its validation, and the decision. No I/O. |
 | `internal/rules` | `Policy.Evaluate(Customer) Result`: ordered `Rule` funcs (the first that denies decides) plus the score bands that size an approval. `NewPolicy()` is the product policy. Pure. |
 | `internal/evaluate` | The single evaluation. `Evaluate(ctx, customer)` applies the policy, records the decision, and only then returns it (fail closed). `Get` reads a recorded decision. Declares its ports: `DecisionStore` (`Save`, `Get`) and `Emitter`. |
-| `internal/batch` | The batch and its items. `Submit`, `Process(Attempt)`, `DeadLetter(Attempt)`, `Retry`, `RetryFailed`, `Cancel`, `Report`. Stores before it publishes, fails an item whose publish failed, builds each `Attempt` message, derives the report and batch status, and emits the item metrics. Declares its ports: `Items`, `Publisher`, `Emitter` ([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)). |
+| `internal/batch` | The batch and its items. `Submit`, `Process(Attempt)`, `DeadLetter(Attempt)`, `Retry`, `RetryFailed`, `Cancel`, `ListItems`. Gives each item a version 7 `item_id`, stores before it publishes, fails an item whose publish failed, builds each `Attempt` message, pages the item list, and emits the item metrics. Declares its ports: `Items`, `Publisher`, `Emitter` ([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)). |
 | `internal/adapter/httpapi` | HTTP API v2. Validates customers, calls `evaluate` or `batch`, and maps their errors to status codes. |
 | `internal/adapter/sqs` | One queue consumer with two roles: `Worker` (queue, calls `batch.Process`) and `DeadLetters` (DLQ, calls `batch.DeadLetter`). Reports partial batch failures. |
 | `internal/adapter/ddb` | Implements `batch.Items` and `evaluate.DecisionStore` on one DynamoDB table. The item status transitions are its conditional updates. |
@@ -33,8 +33,8 @@ flowchart LR
     sync["POST /evaluations"]
     batch["POST /evaluations/batch"]
     getOne["GET /evaluations/:id"]
-    getReport["GET /batches/:id/report"]
-    recover["POST /batches/:id/items/:index/retry | cancel\nPOST /batches/:id/retry-failed"]
+    getReport["GET /batches/:id/items"]
+    recover["POST /batches/:id/items/:item_id/retry | cancel\nPOST /batches/:id/retry-failed"]
   end
 
   subgraph edge [AWS CDK]
@@ -58,9 +58,9 @@ flowchart LR
 
   sync --> api --> fn --> ev
   fn -->|"DECISION# / RESULT"| ddb
-  batch --> api --> fn -->|"BatchWriteItem META + ITEM#"| ddb
+  batch --> api --> fn -->|"BatchWriteItem ITEM#"| ddb
   fn -->|SendMessageBatch| q --> worker --> ev
-  worker -->|"UpdateItem QUEUED → DECIDED"| ddb
+  worker -->|"UpdateItem QUEUED → APPROVED | DENIED"| ddb
   q -->|"maxReceiveCount 3"| dlq --> dlqFn
   dlqFn -->|"UpdateItem QUEUED → FAILED"| ddb
   recover --> api --> fn -->|"UpdateItem FAILED → QUEUED / CANCELLED"| ddb
@@ -78,7 +78,7 @@ Two paths, on purpose:
   SLO and returns the decision now. The decision is stored under a new
   `decision_id` and read back with `GET /evaluations/{id}`.
 - Batch (`POST /evaluations/batch`, then SQS, then the worker, then
-  `GET /batches/{id}/report`). HTTP stores the batch items and enqueues.
+  `GET /batches/{id}/items`). HTTP stores the batch items and enqueues.
   This is the loadtest path (1000 req/s NFR on real AWS, 100 req/s by
   default on Floci).
 
@@ -102,21 +102,27 @@ fails the Lambda at startup. `scripts/floci.env` defaults `BATCH_SIZE` to 100.
 
 Then `batch.Submit`:
 
-1. Creates a `batch_id`.
-2. Stores `META` (`size=N`) and one `ITEM#<index>` per customer
-   (`status=QUEUED`, `attempts=1`, the customer input) with `BatchWriteItem`,
-   25 items per call, 8 calls in flight. The store retries `UnprocessedItems`
-   with backoff. If a write fails, the store
-   queries the batch partition and deletes leftover rows so a retry does not
-   hit half-written keys.
-3. Publishes one message per item, `{batch_id, index, attempt, customer}`,
+1. Creates a `batch_id`, and one `item_id` per customer with `uuid.NewV7`.
+   Version 7 UUIDs sort in the order they were made, so item IDs follow the
+   submitted array.
+2. Stores one `ITEM#<item_id>` row per customer (`status=QUEUED`,
+   `attempts=1`, the customer input) with `BatchWriteItem`, 25 items per call,
+   8 calls in flight. There is no batch row. The store retries
+   `UnprocessedItems` with backoff. If a write fails, the store queries the
+   batch partition and deletes leftover rows so a retry does not hit
+   half-written keys. If that delete also fails, the leftover rows make a
+   half-written batch readable, but its `batch_id` never reached a caller:
+   `Submit` returned `503`.
+3. Publishes one message per item, `{batch_id, item_id, attempt, customer}`,
    with `SendMessageBatch`, 10 messages per call, 10 calls in flight. The
-   publisher returns the indexes that failed.
-4. Calls `Items.Fail(batch_id, index, 1)` for exactly the indexes whose
+   `item_id` is also the entry `Id`, so the publisher returns the item IDs
+   that failed.
+4. Calls `Items.Fail(batch_id, item_id, 1)` for exactly the items whose
    publish failed, so no item stays `QUEUED` with no message behind it.
-5. Returns `202 {"batch_id","queued"}`, where `queued` counts the published
-   items. A batch with failed publishes shows `NEEDS_ATTENTION` once the rest
-   is decided, and an operator retries those items.
+5. Returns `202 {"batch_id","queued","item_ids"}`, where `queued` counts the
+   published items and `item_ids` follow the submitted customers. An item
+   whose publish failed shows `FAILED` in the list, and an operator retries
+   it.
 
 If storing the batch fails, the handler returns
 `503 {"error":"batch_not_recorded"}` and publishes nothing. If marking a
@@ -130,15 +136,16 @@ publish costs one `Fail` per item.
 ### Batch item status
 
 The worker hands the message to `batch.Process`, which evaluates the attempt and calls
-`Items.Decide(batch_id, index, attempt, result)`. One conditional
-`UpdateItem` moves the item from `QUEUED` to `DECIDED` and stores the result.
-The update applies only if the item is `QUEUED` on the same attempt. A repeated delivery fails that condition and
-returns `ErrInvalidTransition`. `Process` treats that as success. The item
-is decided once and the total is not inflated.
+`Items.Decide(batch_id, item_id, attempt, result)`. One conditional
+`UpdateItem` moves the item from `QUEUED` to its decision, `APPROVED` or
+`DENIED`, and stores the result. The update applies only if the item is
+`QUEUED` on the same attempt. A repeated delivery fails that condition and
+returns `ErrInvalidTransition`. `Process` treats that as success, so the item
+is decided once and its metric is emitted once.
 
 Every transition is one `UpdateItem` on the item's own `ITEM#` row,
 conditional on its current status and on attempt where that applies. No
-transition writes `META` or any other shared row. Workers that decide items of
+transition writes a shared row. Workers that decide items of
 one batch in parallel therefore never write the same row. Two operators, or an operator and a late
 delivery, cannot both win a transition. These conditions are the only copy of
 the item status rules: there is no in-memory store, and tests run against
@@ -147,39 +154,47 @@ Floci ([ADR 0002](adr/0002-keep-aws-behind-adapters-with-one-implementation.md))
 ```mermaid
 stateDiagram-v2
   [*] --> QUEUED: submit (attempts 1)
-  QUEUED --> DECIDED: worker Decide (same attempt)
+  QUEUED --> APPROVED: worker Decide (same attempt)
+  QUEUED --> DENIED: worker Decide (same attempt)
   QUEUED --> FAILED: DLQ consumer Fail (same attempt), or publish failed
   FAILED --> QUEUED: operator retry (attempts < 5, attempts + 1)
   FAILED --> CANCELLED: operator cancel
   CANCELLED --> CANCELLED: cancel again (200, no change)
-  DECIDED --> [*]
+  APPROVED --> [*]
+  DENIED --> [*]
   CANCELLED --> [*]
 ```
 
 | Transition | Called by | Condition | Update |
 |---|---|---|---|
-| `Decide(batch_id, index, attempt, result)` | `batch.Process` (worker) | `QUEUED` on `attempt` | `status=DECIDED`, `result` |
-| `Fail(batch_id, index, attempt)` | `batch.DeadLetter` (DLQ consumer), and `batch` after a failed publish | `QUEUED` on `attempt` | `status=FAILED` |
-| `Retry(batch_id, index, attempt)` | `batch.Retry`, `batch.RetryFailed` | `FAILED` on `attempt`, `attempts < 5` | `status=QUEUED`, `attempts+1` |
-| `Cancel(batch_id, index)` | `batch.Cancel` | `FAILED`. Cancelling a `CANCELLED` item succeeds with no change | `status=CANCELLED` |
+| `Decide(batch_id, item_id, attempt, result)` | `batch.Process` (worker) | `QUEUED` on `attempt` | `status=APPROVED` or `DENIED`, `result` |
+| `Fail(batch_id, item_id, attempt)` | `batch.DeadLetter` (DLQ consumer), and `batch` after a failed publish | `QUEUED` on `attempt` | `status=FAILED` |
+| `Retry(batch_id, item_id, attempt)` | `batch.Retry`, `batch.RetryFailed` | `FAILED` on `attempt`, `attempts < 5` | `status=QUEUED`, `attempts+1` |
+| `Cancel(batch_id, item_id)` | `batch.Cancel` | `FAILED`. Cancelling a `CANCELLED` item succeeds with no change | `status=CANCELLED` |
 
 A retry's message carries the new attempt. A late message for an older attempt
 fails the `Decide` condition, so only the current attempt can decide the item.
-A failed item keeps its attempts, so the report shows how many passes it took.
+A failed item keeps its attempts, so the list shows how many passes it took.
 
-`batch.Report` reads every item with `Items.All` and counts them by status on every read (`queued`,
-`decided`, `failed`, `cancelled`). The batch status comes from those counters.
-Neither is stored:
+### Item list
 
-| Batch status | When |
-|---|---|
-| `PROCESSING` | `queued > 0` |
-| `NEEDS_ATTENTION` | `queued = 0` and `failed > 0` |
-| `COMPLETED` | otherwise (every item decided or cancelled) |
+`GET /batches/{id}/items` returns one page of items in submission order
+([ADR 0003](adr/0003-list-batch-items-by-page.md)). A batch has no status and
+no totals: each item carries its own status and revolving amount. A caller
+knows the batch is done when `?limit=1&status=QUEUED` returns no items.
 
-`GET /batches/{id}/report` reads the whole batch with one paginated `Query` on
-`pk = BATCH#<batch_id>`. The handler follows `LastEvaluatedKey` past 1 MB
-pages. The handler never reads one item at a time.
+`batch.ListItems` asks `Items.Page` for at most `limit` items (100 by default,
+1000 at most) after the cursor's item. `Page` runs a `Query` on
+`pk = BATCH#<batch_id>` and `begins_with(sk, "ITEM#")`, with
+`#status = :status` as a filter when `?status=` is set. Query's `Limit`
+counts rows before the filter, so `Page` repeats the Query until the page is
+full or `LastEvaluatedKey` is empty. A 1 MB response ends a Query early the
+same way. The cursor is the last returned `item_id`, base64url-encoded. The
+server builds the `ExclusiveStartKey` from the path's `batch_id` and that ID.
+
+A batch always has at least one item, so on the first page a `Query` that
+scanned no rows (`ScannedCount = 0`) means an unknown batch: `404`. Rows
+scanned with none matching the filter is a `200` with no items.
 
 ### Resilience
 
@@ -190,8 +205,9 @@ has `ReportBatchItemFailures`, so SQS redelivers only the failed records.
 
 `EvaluationJobs` sends a record to `EvaluationJobsDLQ` (14-day retention)
 after `maxReceiveCount=3` receives. The `DlqConsumer` Lambda calls
-`batch.DeadLetter` for each record, which calls `Items.Fail(batch_id, index, attempt)`, which makes the
-item `FAILED` and the batch `NEEDS_ATTENTION`. The DLQ is a signal, not a
+`batch.DeadLetter` for each record, which calls
+`Items.Fail(batch_id, item_id, attempt)` and makes the item `FAILED`. The DLQ
+is a signal, not a
 recovery path. Nothing redrives the DLQ
 ([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)).
 
@@ -204,14 +220,15 @@ retried on a newer attempt). The consumer reports a record as failed only
 when the store write fails, so SQS retries that record within the DLQ's
 retention.
 
-`POST /batches/{id}/items/{index}/retry` reads the item (`ITEM#<index>`),
-moves it `FAILED → QUEUED` on the next attempt, and publishes
-`{batch_id, index, attempt, customer}`. If the publish fails, the handler
+`POST /batches/{id}/items/{item_id}/retry` reads the item
+(`ITEM#<item_id>`), moves it `FAILED → QUEUED` on the next attempt, and
+publishes `{batch_id, item_id, attempt, customer}`. An `item_id` that is not
+a UUID is a `404` before any store call. If the publish fails, the handler
 moves the item back to `FAILED`. The attempt stays counted. The handler
 returns `503 {"error":"enqueue_failed"}`.
 
-`POST /batches/{id}/retry-failed` finds the failed items with one paginated
-`Query`, filtered to `META` and `FAILED` items. `RetryMany` moves them
+`POST /batches/{id}/retry-failed` reads the failed items with `Items.Page`
+(`?status=FAILED`, pages of 1000). `RetryMany` moves them
 `FAILED → QUEUED` with one conditional `UpdateItem` per item, 8 in flight.
 The handler then publishes them with `SendMessageBatch` in chunks of 10. Items whose publish failed
 go back to `FAILED` and are not counted in `requeued`. There is no whole-batch
@@ -229,7 +246,7 @@ same trace. An operator retry is a new HTTP invocation and a new trace.
 Each Lambda logs JSON with `log/slog` on stdout. Keys are `snake_case`. A
 handler that returns a `5xx` logs the cause once at `error`, with no customer
 name or full CPF. The worker and DLQ consumer log `record_failed` at `error`
-with `message_id`, `error`, and `batch_id` and `index` when the body parsed.
+with `message_id`, `error`, and `batch_id` and `item_id` when the body parsed.
 They never log the body or customer fields.
 
 Each recorded decision writes one CloudWatch Embedded Metric Format line in
@@ -247,8 +264,8 @@ recorded.
 | `ItemsFailed` | `batch` moved the item to `FAILED` (DLQ consumer or a failed publish) | none |
 
 Decision line properties: `decision`, `reason`, `latency_ms`, `cpf_masked`,
-and either `decision_id` (sync) or `batch_id` and `index` (batch). Failed-item
-line properties: `batch_id`, `index`, `attempt`. Logs, EMF properties, and
+and either `decision_id` (sync) or `batch_id` and `item_id` (batch). Failed-item
+line properties: `batch_id`, `item_id`, `attempt`. Logs, EMF properties, and
 metric dimensions never include a customer name or a full CPF.
 
 The CloudWatch dashboard `CreditCardEngine` shows evaluations per minute,
@@ -266,8 +283,11 @@ One DynamoDB table, `Decisions`, with generic keys `pk` (string) and `sk`
 | `pk` | `sk` | Attributes |
 |---|---|---|
 | `DECISION#<decision_id>` | `RESULT` | `customer` (input JSON), `result` (decision JSON) |
-| `BATCH#<batch_id>` | `META` | `size` (the item count). Written once. Marks the batch as existing. |
-| `BATCH#<batch_id>` | `ITEM#<index>` | `index`, `customer` (input JSON), `status`, `attempts`, `result` once decided |
+| `BATCH#<batch_id>` | `ITEM#<item_id>` | `item_id`, `customer` (input JSON), `status`, `attempts`, `result` once decided |
+
+A batch is its item rows. There is no batch row: an unknown batch is a
+partition with no rows. `item_id` is a version 7 UUID, so a Query on the
+partition returns items in submission order.
 
 Each batch item stores the input and the item status together. Stored
 decisions and batch items keep the full CPF and name with no TTL. They are
@@ -411,30 +431,28 @@ Wire types are `events.APIGatewayV2HTTPRequest` and `HTTPResponse`.
 | `GET` | `/health` | — | `{"status":"ok"}` |
 | `POST` | `/evaluations` | one `Customer` | `200` + `{decision_id, ...Result}` (sync, 1 s SLO); `400` malformed JSON; `422` invalid customer; `503 {"error":"decision_not_recorded"}` when the decision cannot be stored |
 | `GET` | `/evaluations/{id}` | — | `200` + the same `{decision_id, ...Result}`; `404 {"error":"not_found"}` |
-| `POST` | `/evaluations/batch` | `{customers:[...]}` or array, at most `BATCH_SIZE` (default 100, max 1000) | `202` + `{batch_id, queued}`; `422` with indexed violations or `batch_too_large`, nothing stored or published; `503 {"error":"batch_not_recorded"}`, nothing published |
-| `GET` | `/batches/{id}/report` | — | `200` + report; `404 {"error":"not_found"}` |
-| `POST` | `/batches/{id}/items/{index}/retry` | — | `202 {"index","attempts"}`; `409 {"error":"invalid_transition"}` if not `FAILED`; `409 {"error":"max_attempts_reached"}` at 5 attempts; `404`; `503 {"error":"enqueue_failed"}` (item `FAILED` again) |
-| `POST` | `/batches/{id}/items/{index}/cancel` | — | `200 {"index","status":"CANCELLED"}`, again `200` on a cancelled item; `409 {"error":"invalid_transition"}` otherwise; `404` |
+| `POST` | `/evaluations/batch` | `{customers:[...]}` or array, at most `BATCH_SIZE` (default 100, max 1000) | `202` + `{batch_id, queued, item_ids}`, `item_ids` in the order of the customers; `422` with indexed violations or `batch_too_large`, nothing stored or published; `503 {"error":"batch_not_recorded"}`, nothing published |
+| `GET` | `/batches/{id}/items?status=&limit=&cursor=` | — | `200` + one page of items; `400 {"error":"invalid_status"}`, `{"error":"invalid_limit","max":1000}`, or `{"error":"invalid_cursor"}`; `404 {"error":"not_found"}` |
+| `POST` | `/batches/{id}/items/{item_id}/retry` | — | `202 {"attempts","item_id"}`; `409 {"error":"invalid_transition"}` if not `FAILED`; `409 {"error":"max_attempts_reached"}` at 5 attempts; `404`; `503 {"error":"enqueue_failed"}` (item `FAILED` again) |
+| `POST` | `/batches/{id}/items/{item_id}/cancel` | — | `200 {"item_id","status":"CANCELLED"}`, again `200` on a cancelled item; `409 {"error":"invalid_transition"}` otherwise; `404` |
 | `POST` | `/batches/{id}/retry-failed` | — | `202 {"requeued": n}`; `404` |
 
-The report:
+One page of items, `GET /batches/{id}/items?limit=2`:
 
 ```json
 {
-  "batch_id": "…",
-  "status": "COMPLETED",
-  "counters": {"queued": 0, "decided": 2, "failed": 0, "cancelled": 0},
-  "approved": [{"index": 0, "name": "Ana Souza", "cpf_masked": "***05", "decision": "APPROVED",
-                "reasons": ["eligible"], "revolving_amount_cents": 400000, "attempts": 1}],
-  "denied": [{"index": 1, "name": "Bruno Lima", "cpf_masked": "***09", "decision": "DENIED",
-              "reasons": ["score_below_600"], "revolving_amount_cents": 0, "attempts": 1}],
-  "failed": [],
-  "cancelled": [],
-  "total_revolving_amount_cents": 400000
+  "batch_id": "b5e2d9a0-1c3f-4e8b-a7d6-9f0c2e4b8a13",
+  "items": [
+    {"item_id": "0199a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b", "name": "Ana Souza", "cpf_masked": "***05",
+     "status": "APPROVED", "reasons": ["eligible"], "revolving_amount_cents": 250000, "attempts": 1},
+    {"item_id": "0199a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1c", "name": "Bruno Lima", "cpf_masked": "***09",
+     "status": "FAILED", "reasons": [], "revolving_amount_cents": 0, "attempts": 1}
+  ],
+  "next_cursor": "MDE5OWExYjItN2MzZC03ZTRmLThhNWItNmM3ZDhlOWYwYTFj"
 }
 ```
 
-`total_revolving_amount_cents` sums approved items only.
+The last page has no `next_cursor`.
 
 ## Infra (CDK Go)
 
@@ -447,13 +465,13 @@ The report:
 | Lambda `provided.al2023` arm64 | `GoFunction` | Go binary, cold start low enough for the SLO |
 | Timeout 3 s / 256 MB | — | SLO is 1 s. 3 s is a safety cap, not the budget. |
 | Reserved concurrency 8, 4, and 2 | Floci only (`AWS_ENDPOINT_URL` set at synth) | Floci starts one container per concurrent invoke. The cap keeps `make loadtest` from stalling the API. Real AWS stays unreserved. |
-| DynamoDB on-demand | keys `pk` and `sk` (see [Data model](#data-model)) | Batched writes on submit, one transaction per decided item. |
+| DynamoDB on-demand | keys `pk` and `sk` (see [Data model](#data-model)) | Batched writes on submit, one conditional `UpdateItem` per transition. |
 | AWS managed encryption | AWS managed | Default encryption at rest. |
 | IAM authorizer | every route except `GET /health` | SigV4 on `execute-api`. `/health` stays open for probes. |
 | Worker + SQS | 1000 req/s batch | HTTP stores the items with `BatchWriteItem` and publishes with `SendMessageBatch`. The worker evaluates and decides the item. Batch size 10 with `ReportBatchItemFailures`. |
 | `EvaluationJobsDLQ` | `maxReceiveCount=3`, 14-day retention | A record that keeps failing stops retrying and becomes a failed item ([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)). |
 | `DlqConsumer` Lambda | `cmd/dlq`, same runtime and sizing as the others, 14-day log group | Batch size 10 with `ReportBatchItemFailures`. Read and write on the table and consume on the DLQ, nothing else. |
-| Routes | `POST /evaluations`, `GET /evaluations/{id}`, `POST /evaluations/batch`, `GET /batches/{id}/report`, `POST /batches/{id}/items/{index}/retry`, `POST /batches/{id}/items/{index}/cancel`, `POST /batches/{id}/retry-failed`, `GET /health` | One HTTP Lambda serves every route. Every Lambda reads and writes the table. The HTTP Lambda sends to the queue. |
+| Routes | `POST /evaluations`, `GET /evaluations/{id}`, `POST /evaluations/batch`, `GET /batches/{id}/items`, `POST /batches/{id}/items/{item_id}/retry`, `POST /batches/{id}/items/{item_id}/cancel`, `POST /batches/{id}/retry-failed`, `GET /health` | One HTTP Lambda serves every route. Every Lambda reads and writes the table. The HTTP Lambda sends to the queue. |
 
 The run steps live in [README.md](../README.md).
 

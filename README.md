@@ -79,7 +79,8 @@ curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$
 ```
 
 `POST /evaluations/batch` accepts at most `BATCH_SIZE` customers (default 100,
-max 1000) and returns `202` with `batch_id` and `queued`. If any customer is
+max 1000) and returns `202` with `batch_id`, `queued`, and `item_ids`. The
+`item_ids` follow the order of the submitted customers. If any customer is
 invalid, the handler returns `422` with each violation's `index`. A larger
 batch returns `422 {"error":"batch_too_large","max":<BATCH_SIZE>}`. In both
 error cases nothing is stored or queued.
@@ -87,20 +88,24 @@ error cases nothing is stored or queued.
 A `BATCH_SIZE` outside 1..1000 fails the synth. To raise the cap, run
 `BATCH_SIZE=1000 make local-deploy`.
 
-The worker drains SQS and decides each batch item. Then fetch the report:
+The worker drains SQS and decides each batch item. Then list the items:
 
 ```bash
 curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
-  "$BASE/batches/<batch_id>/report"
+  "$BASE/batches/<batch_id>/items?limit=100"
 ```
 
-The report shows batch status, counters, and the `approved`, `denied`,
-`failed`, and `cancelled` items. Each item has a masked CPF and its
-`attempts`. `total_revolving_amount_cents` sums the approved items.
+Each item has its `item_id`, a masked CPF, its `status` (`QUEUED`,
+`APPROVED`, `DENIED`, `FAILED`, or `CANCELLED`), `reasons`,
+`revolving_amount_cents`, and `attempts`, in submission order. To read the
+next page, pass `next_cursor` as `?cursor=`. The last page has no
+`next_cursor`. To list one status only, add `?status=FAILED`. The batch is
+done when `?limit=1&status=QUEUED` returns no items.
 
-Status is `PROCESSING` while items are queued, `NEEDS_ATTENTION` when none
-is queued and some item failed, and `COMPLETED` when every item is decided
-or cancelled.
+With more than one query parameter, write them in alphabetical order
+(`cursor`, `limit`, `status`). The curl in the Dev Container (7.88) signs the
+query string in the order you type it, and SigV4 expects sorted keys, so any
+other order returns `403`. The AWS SDKs sort for you.
 
 Bruno (score 520), Carla (invoice over the credit limit), and Diego (3 late
 payments) are `DENIED`.
@@ -112,15 +117,15 @@ consumer marks it `FAILED`. An operator then retries or cancels it, at most
 5 attempts per item:
 
 ```bash
-# Retry one failed item: 202 {"index":0,"attempts":2}
+# Retry one failed item: 202 {"attempts":2,"item_id":"<item_id>"}
 curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
-  -X POST "$BASE/batches/<batch_id>/items/0/retry"
+  -X POST "$BASE/batches/<batch_id>/items/<item_id>/retry"
 # Retry every failed item under 5 attempts: 202 {"requeued":<n>}
 curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
   -X POST "$BASE/batches/<batch_id>/retry-failed"
-# Cancel one failed item: 200 {"index":0,"status":"CANCELLED"}, again 200
+# Cancel one failed item: 200 {"item_id":"<item_id>","status":"CANCELLED"}, again 200
 curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
-  -X POST "$BASE/batches/<batch_id>/items/0/cancel"
+  -X POST "$BASE/batches/<batch_id>/items/<item_id>/cancel"
 ```
 
 A retry or cancel of an item that is not `FAILED` returns
