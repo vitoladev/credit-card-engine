@@ -70,13 +70,13 @@ func (p *Publisher) send(ctx context.Context, chunk []queue.Job) ([]int, error) 
 			return indexes(chunk), err
 		}
 		entries = append(entries, types.SendMessageBatchRequestEntry{
-			Id:                      aws.String(strconv.Itoa(job.Index)),
-			MessageBody:             aws.String(string(body)),
+			Id:                      new(strconv.Itoa(job.Index)),
+			MessageBody:             new(string(body)),
 			MessageSystemAttributes: trace,
 		})
 	}
 	out, err := p.client.SendMessageBatch(ctx, &sqs.SendMessageBatchInput{
-		QueueUrl: aws.String(p.url),
+		QueueUrl: new(p.url),
 		Entries:  entries,
 	})
 	if err != nil {
@@ -113,8 +113,8 @@ func traceHeader() map[string]types.MessageSystemAttributeValue {
 	}
 	return map[string]types.MessageSystemAttributeValue{
 		string(types.MessageSystemAttributeNameForSendsAWSTraceHeader): {
-			DataType:    aws.String("String"),
-			StringValue: aws.String(header),
+			DataType:    new("String"),
+			StringValue: new(header),
 		},
 	}
 }

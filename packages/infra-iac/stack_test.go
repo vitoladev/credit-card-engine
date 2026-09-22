@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -260,14 +262,10 @@ func TestStackHasIAMAuthorizerDashboardAndAlarms(t *testing.T) {
 }
 
 func TestLambdaEntriesPointAtApps(t *testing.T) {
-	if got := lambdaEntry(); got == "" {
-		t.Fatal("empty evaluate entry")
-	}
-	if got := workerEntry(); got == "" {
-		t.Fatal("empty worker entry")
-	}
-	if got := dlqEntry(); got == "" {
-		t.Fatal("empty dlq entry")
+	for _, cmd := range []string{"http", "worker", "dlq"} {
+		if _, err := os.Stat(filepath.Join(cmdEntry(cmd), "main.go")); err != nil {
+			t.Errorf("entry %s: %v", cmd, err)
+		}
 	}
 }
 

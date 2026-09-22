@@ -2,14 +2,13 @@ package ddb_test
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -77,32 +76,26 @@ func newStoreWith(t *testing.T, opt func(*aws.Config)) *ddb.Store {
 		opt(&cfg)
 	}
 	client := dynamodb.NewFromConfig(cfg)
-	table := "ddb-test-" + randomID()
+	table := "ddb-test-" + uuid.New().String()
 	_, err = client.CreateTable(t.Context(), &dynamodb.CreateTableInput{
-		TableName:   aws.String(table),
+		TableName:   new(table),
 		BillingMode: types.BillingModePayPerRequest,
 		AttributeDefinitions: []types.AttributeDefinition{
-			{AttributeName: aws.String("pk"), AttributeType: types.ScalarAttributeTypeS},
-			{AttributeName: aws.String("sk"), AttributeType: types.ScalarAttributeTypeS},
+			{AttributeName: new("pk"), AttributeType: types.ScalarAttributeTypeS},
+			{AttributeName: new("sk"), AttributeType: types.ScalarAttributeTypeS},
 		},
 		KeySchema: []types.KeySchemaElement{
-			{AttributeName: aws.String("pk"), KeyType: types.KeyTypeHash},
-			{AttributeName: aws.String("sk"), KeyType: types.KeyTypeRange},
+			{AttributeName: new("pk"), KeyType: types.KeyTypeHash},
+			{AttributeName: new("sk"), KeyType: types.KeyTypeRange},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		_, _ = client.DeleteTable(context.Background(), &dynamodb.DeleteTableInput{TableName: aws.String(table)})
+		_, _ = client.DeleteTable(context.Background(), &dynamodb.DeleteTableInput{TableName: new(table)})
 	})
 	return ddb.New(cfg, table)
-}
-
-func randomID() string {
-	var b [6]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
 }
 
 func TestDecisionRoundTrip(t *testing.T) {

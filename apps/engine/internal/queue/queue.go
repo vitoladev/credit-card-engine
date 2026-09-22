@@ -17,6 +17,15 @@ type Job struct {
 	Customer domain.Customer `json:"customer"`
 }
 
+// ParseJob decodes a message body.
+func ParseJob(body string) (Job, error) {
+	var job Job
+	if err := json.Unmarshal([]byte(body), &job); err != nil {
+		return Job{}, err
+	}
+	return job, nil
+}
+
 type Publisher interface {
 	// Publish returns the indexes of the jobs that were not published, so the
 	// caller can act on exactly those items.

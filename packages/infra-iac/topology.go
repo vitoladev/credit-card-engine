@@ -64,14 +64,7 @@ func repoRoot() string {
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
-func lambdaEntry() string {
-	return filepath.Join(repoRoot(), "apps", "engine", "cmd", "http")
-}
-
-func workerEntry() string {
-	return filepath.Join(repoRoot(), "apps", "engine", "cmd", "worker")
-}
-
-func dlqEntry() string {
-	return filepath.Join(repoRoot(), "apps", "engine", "cmd", "dlq")
+// cmdEntry is the Go main package of one engine binary.
+func cmdEntry(cmd string) string {
+	return filepath.Join(repoRoot(), "apps", "engine", "cmd", cmd)
 }

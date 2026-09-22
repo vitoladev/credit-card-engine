@@ -11,33 +11,9 @@ import (
 
 func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer awslambda.IFunction, api awsapigatewayv2.HttpApi, dlq awssqs.IQueue) {
 	minute := awscdk.Duration_Minutes(jsii.Number(1))
-	api.MetricServerError(&awscloudwatch.MetricOptions{
-		Statistic: jsii.String("Sum"),
-		Period:    minute,
-	}).CreateAlarm(stack, jsii.String("Api5xx"), &awscloudwatch.CreateAlarmOptions{
-		AlarmDescription:  jsii.String("API Gateway 5xx ≥ 1 in 1 minute"),
-		Threshold:         jsii.Number(api5xxAlarmThreshold),
-		EvaluationPeriods: jsii.Number(1),
-		TreatMissingData:  awscloudwatch.TreatMissingData_NOT_BREACHING,
-	})
-	worker.MetricErrors(&awscloudwatch.MetricOptions{
-		Statistic: jsii.String("Sum"),
-		Period:    minute,
-	}).CreateAlarm(stack, jsii.String("WorkerErrors"), &awscloudwatch.CreateAlarmOptions{
-		AlarmDescription:  jsii.String("Worker Lambda errors ≥ 1 in 1 minute"),
-		Threshold:         jsii.Number(workerErrorAlarmThreshold),
-		EvaluationPeriods: jsii.Number(1),
-		TreatMissingData:  awscloudwatch.TreatMissingData_NOT_BREACHING,
-	})
-	dlqConsumer.MetricErrors(&awscloudwatch.MetricOptions{
-		Statistic: jsii.String("Sum"),
-		Period:    minute,
-	}).CreateAlarm(stack, jsii.String("DlqConsumerErrors"), &awscloudwatch.CreateAlarmOptions{
-		AlarmDescription:  jsii.String("DLQ consumer Lambda errors ≥ 1 in 1 minute"),
-		Threshold:         jsii.Number(dlqConsumerErrorAlarmThreshold),
-		EvaluationPeriods: jsii.Number(1),
-		TreatMissingData:  awscloudwatch.TreatMissingData_NOT_BREACHING,
-	})
+	alarmOnSum(stack, "Api5xx", "API Gateway 5xx ≥ 1 in 1 minute", api.MetricServerError, api5xxAlarmThreshold)
+	alarmOnSum(stack, "WorkerErrors", "Worker Lambda errors ≥ 1 in 1 minute", worker.MetricErrors, workerErrorAlarmThreshold)
+	alarmOnSum(stack, "DlqConsumerErrors", "DLQ consumer Lambda errors ≥ 1 in 1 minute", dlqConsumer.MetricErrors, dlqConsumerErrorAlarmThreshold)
 	dlq.MetricApproximateNumberOfMessagesVisible(&awscloudwatch.MetricOptions{
 		Period: minute,
 	}).CreateAlarm(stack, jsii.String("DlqVisible"), &awscloudwatch.CreateAlarmOptions{
@@ -87,52 +63,20 @@ func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer awslambda.IFu
 		DashboardName: jsii.String(dashboardName),
 	})
 	dash.AddWidgets(
-		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
-			Title: jsii.String("Evaluations per minute"),
-			Left:  &[]awscloudwatch.IMetric{evaluations},
-			Width: jsii.Number(12),
-		}),
-		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
-			Title: jsii.String("Approval rate"),
-			Left:  &[]awscloudwatch.IMetric{approvalRate},
-			Width: jsii.Number(12),
-		}),
+		graph("Evaluations per minute", evaluations),
+		graph("Approval rate", approvalRate),
 	)
 	dash.AddWidgets(
-		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
-			Title: jsii.String("DenyByReason"),
-			Left:  &[]awscloudwatch.IMetric{denyByReason},
-			Width: jsii.Number(12),
-		}),
-		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
-			Title: jsii.String("DecisionLatencyMs p99"),
-			Left:  &[]awscloudwatch.IMetric{engineMetric("DecisionLatencyMs", "p99")},
-			Width: jsii.Number(12),
-		}),
+		graph("DenyByReason", denyByReason),
+		graph("DecisionLatencyMs p99", engineMetric("DecisionLatencyMs", "p99")),
 	)
 	dash.AddWidgets(
-		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
-			Title: jsii.String("HTTP Lambda p99 duration"),
-			Left:  &[]awscloudwatch.IMetric{fn.MetricDuration(&awscloudwatch.MetricOptions{Statistic: jsii.String("p99"), Period: minute})},
-			Width: jsii.Number(12),
-		}),
-		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
-			Title: jsii.String("API 5xx"),
-			Left:  &[]awscloudwatch.IMetric{api.MetricServerError(&awscloudwatch.MetricOptions{Statistic: jsii.String("Sum"), Period: minute})},
-			Width: jsii.Number(12),
-		}),
+		graph("HTTP Lambda p99 duration", fn.MetricDuration(&awscloudwatch.MetricOptions{Statistic: jsii.String("p99"), Period: minute})),
+		graph("API 5xx", api.MetricServerError(&awscloudwatch.MetricOptions{Statistic: jsii.String("Sum"), Period: minute})),
 	)
 	dash.AddWidgets(
-		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
-			Title: jsii.String("DLQ visible messages"),
-			Left:  &[]awscloudwatch.IMetric{dlq.MetricApproximateNumberOfMessagesVisible(&awscloudwatch.MetricOptions{Period: minute})},
-			Width: jsii.Number(12),
-		}),
-		awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
-			Title: jsii.String("ItemsFailed"),
-			Left:  &[]awscloudwatch.IMetric{engineMetric("ItemsFailed", "Sum")},
-			Width: jsii.Number(12),
-		}),
+		graph("DLQ visible messages", dlq.MetricApproximateNumberOfMessagesVisible(&awscloudwatch.MetricOptions{Period: minute})),
+		graph("ItemsFailed", engineMetric("ItemsFailed", "Sum")),
 	)
 }
 
@@ -142,5 +86,27 @@ func engineMetric(name, stat string) awscloudwatch.Metric {
 		MetricName: jsii.String(name),
 		Statistic:  jsii.String(stat),
 		Period:     awscdk.Duration_Minutes(jsii.Number(1)),
+	})
+}
+
+// alarmOnSum alarms when a metric's per-minute Sum reaches threshold.
+func alarmOnSum(stack awscdk.Stack, id, description string, metric func(*awscloudwatch.MetricOptions) awscloudwatch.Metric, threshold float64) {
+	metric(&awscloudwatch.MetricOptions{
+		Statistic: jsii.String("Sum"),
+		Period:    awscdk.Duration_Minutes(jsii.Number(1)),
+	}).CreateAlarm(stack, jsii.String(id), &awscloudwatch.CreateAlarmOptions{
+		AlarmDescription:  jsii.String(description),
+		Threshold:         jsii.Number(threshold),
+		EvaluationPeriods: jsii.Number(1),
+		TreatMissingData:  awscloudwatch.TreatMissingData_NOT_BREACHING,
+	})
+}
+
+// graph is a half-width dashboard graph of one metric.
+func graph(title string, metric awscloudwatch.IMetric) awscloudwatch.GraphWidget {
+	return awscloudwatch.NewGraphWidget(&awscloudwatch.GraphWidgetProps{
+		Title: jsii.String(title),
+		Left:  &[]awscloudwatch.IMetric{metric},
+		Width: jsii.Number(12),
 	})
 }

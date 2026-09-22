@@ -2,7 +2,6 @@ package dlq
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -23,7 +22,7 @@ func New(markFailed markfailed.UseCase) Handler {
 func (h Handler) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEventResponse, error) {
 	var resp events.SQSEventResponse
 	for _, rec := range ev.Records {
-		job, err := parseJob(rec.Body)
+		job, err := queue.ParseJob(rec.Body)
 		if err != nil {
 			// Unparseable poison is acknowledged so it does not loop in the DLQ.
 			continue
@@ -38,12 +37,4 @@ func (h Handler) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEven
 		}
 	}
 	return resp, nil
-}
-
-func parseJob(body string) (queue.Job, error) {
-	var job queue.Job
-	if err := json.Unmarshal([]byte(body), &job); err != nil {
-		return queue.Job{}, err
-	}
-	return job, nil
 }

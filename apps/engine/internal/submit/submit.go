@@ -2,11 +2,10 @@ package submit
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"strconv"
+	"uuid"
 
 	"engine/internal/domain"
 	"engine/internal/queue"
@@ -61,7 +60,7 @@ func (u UseCase) Execute(ctx context.Context, customers []domain.Customer) (Acce
 	if len(customers) > u.maxCustomers {
 		return Accepted{}, ErrBatchTooLarge
 	}
-	id := newID()
+	id := uuid.New().String()
 	if err := u.batches.Create(ctx, id, customers); err != nil {
 		return Accepted{}, fmt.Errorf("%w: %w", ErrNotRecorded, err)
 	}
@@ -78,10 +77,4 @@ func (u UseCase) Execute(ctx context.Context, customers []domain.Customer) (Acce
 		}
 	}
 	return Accepted{BatchID: id, Queued: len(customers) - len(failed)}, nil
-}
-
-func newID() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
 }

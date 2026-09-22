@@ -74,15 +74,15 @@ func (st *Store) Save(ctx context.Context, decisionID string, c domain.Customer,
 	item := decisionKey(decisionID)
 	item["customer"] = sAttr(string(customer))
 	item["result"] = sAttr(string(result))
-	_, err = st.client.PutItem(ctx, &dynamodb.PutItemInput{TableName: aws.String(st.table), Item: item})
+	_, err = st.client.PutItem(ctx, &dynamodb.PutItemInput{TableName: new(st.table), Item: item})
 	return err
 }
 
 func (st *Store) Get(ctx context.Context, decisionID string) (domain.Result, error) {
 	out, err := st.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName:      aws.String(st.table),
+		TableName:      new(st.table),
 		Key:            decisionKey(decisionID),
-		ConsistentRead: aws.Bool(true),
+		ConsistentRead: new(true),
 	})
 	if err != nil {
 		return domain.Result{}, err
@@ -99,7 +99,7 @@ func (st *Store) Get(ctx context.Context, decisionID string) (domain.Result, err
 func (st *Store) Create(ctx context.Context, batchID string, customers []domain.Customer) error {
 	meta := metaKey(batchID)
 	meta["size"] = nAttr(len(customers))
-	puts := []map[string]types.AttributeValue{meta}
+	puts := []types.WriteRequest{{PutRequest: &types.PutRequest{Item: meta}}}
 	for i, c := range customers {
 		raw, err := json.Marshal(c)
 		if err != nil {
@@ -110,7 +110,7 @@ func (st *Store) Create(ctx context.Context, batchID string, customers []domain.
 		item["customer"] = sAttr(string(raw))
 		item["status"] = sAttr(string(store.Queued))
 		item["attempts"] = nAttr(1)
-		puts = append(puts, item)
+		puts = append(puts, types.WriteRequest{PutRequest: &types.PutRequest{Item: item}})
 	}
 
 	var (
@@ -124,7 +124,7 @@ func (st *Store) Create(ctx context.Context, batchID string, customers []domain.
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			if err := st.writeChunk(ctx, chunk); err != nil {
+			if err := st.batchWrite(ctx, chunk); err != nil {
 				mu.Lock()
 				errs = append(errs, err)
 				mu.Unlock()
@@ -141,11 +141,9 @@ func (st *Store) Create(ctx context.Context, batchID string, customers []domain.
 	return nil
 }
 
-func (st *Store) writeChunk(ctx context.Context, items []map[string]types.AttributeValue) error {
-	reqs := make([]types.WriteRequest, len(items))
-	for i, item := range items {
-		reqs[i] = types.WriteRequest{PutRequest: &types.PutRequest{Item: item}}
-	}
+// batchWrite sends up to writeChunk requests and retries UnprocessedItems with
+// backoff.
+func (st *Store) batchWrite(ctx context.Context, reqs []types.WriteRequest) error {
 	for try := range writeTries {
 		if try > 0 {
 			select {
@@ -165,7 +163,7 @@ func (st *Store) writeChunk(ctx context.Context, items []map[string]types.Attrib
 			return nil
 		}
 	}
-	return fmt.Errorf("batch write item: %d items still unprocessed after %d tries", len(reqs), writeTries)
+	return fmt.Errorf("batch write item: %d requests still unprocessed after %d tries", len(reqs), writeTries)
 }
 
 // Decide moves the item to DECIDED, conditional on it being QUEUED on this
@@ -267,51 +265,28 @@ func (st *Store) deleteBatch(ctx context.Context, batchID string) error {
 	if err != nil {
 		return err
 	}
+	dels := make([]types.WriteRequest, len(keys))
+	for i, key := range keys {
+		dels[i] = types.WriteRequest{DeleteRequest: &types.DeleteRequest{Key: key}}
+	}
 	var errs []error
-	for start := 0; start < len(keys); start += writeChunk {
-		if err := st.writeDeletes(ctx, keys[start:min(start+writeChunk, len(keys))]); err != nil {
+	for start := 0; start < len(dels); start += writeChunk {
+		if err := st.batchWrite(ctx, dels[start:min(start+writeChunk, len(dels))]); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (st *Store) writeDeletes(ctx context.Context, keys []map[string]types.AttributeValue) error {
-	reqs := make([]types.WriteRequest, len(keys))
-	for i, key := range keys {
-		reqs[i] = types.WriteRequest{DeleteRequest: &types.DeleteRequest{Key: key}}
-	}
-	for try := range writeTries {
-		if try > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(backoffBase << (try - 1)):
-			}
-		}
-		out, err := st.client.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
-			RequestItems: map[string][]types.WriteRequest{st.table: reqs},
-		})
-		if err != nil {
-			return err
-		}
-		reqs = out.UnprocessedItems[st.table]
-		if len(reqs) == 0 {
-			return nil
-		}
-	}
-	return fmt.Errorf("delete batch: %d keys still unprocessed", len(reqs))
-}
-
 func (st *Store) keysForBatch(ctx context.Context, batchID string) ([]map[string]types.AttributeValue, error) {
 	in := &dynamodb.QueryInput{
-		TableName:              aws.String(st.table),
-		KeyConditionExpression: aws.String("pk = :pk"),
-		ProjectionExpression:   aws.String("pk, sk"),
+		TableName:              new(st.table),
+		KeyConditionExpression: new("pk = :pk"),
+		ProjectionExpression:   new("pk, sk"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":pk": sAttr("BATCH#" + batchID),
 		},
-		ConsistentRead: aws.Bool(true),
+		ConsistentRead: new(true),
 	}
 	var keys []map[string]types.AttributeValue
 	p := dynamodb.NewQueryPaginator(st.client, in)
@@ -355,10 +330,10 @@ func (st *Store) move(ctx context.Context, batchID string, index int, to, from s
 	vals := map[string]types.AttributeValue{":from": sAttr(string(from)), ":to": sAttr(string(to))}
 	maps.Copy(vals, u.values)
 	_, err := st.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:                           aws.String(st.table),
+		TableName:                           new(st.table),
 		Key:                                 itemKey(batchID, index),
-		UpdateExpression:                    aws.String(u.update),
-		ConditionExpression:                 aws.String(u.cond),
+		UpdateExpression:                    new(u.update),
+		ConditionExpression:                 new(u.cond),
 		ExpressionAttributeNames:            names,
 		ExpressionAttributeValues:           vals,
 		ReturnValuesOnConditionCheckFailure: types.ReturnValuesOnConditionCheckFailureAllOld,
@@ -374,8 +349,8 @@ func isStatus(row map[string]types.AttributeValue, s store.ItemStatus) bool {
 // conditionFailed returns the item as it was when its condition failed. An
 // empty item means the item does not exist.
 func conditionFailed(err error) (map[string]types.AttributeValue, bool) {
-	var failed *types.ConditionalCheckFailedException
-	if !errors.As(err, &failed) {
+	failed, ok := errors.AsType[*types.ConditionalCheckFailedException](err)
+	if !ok {
 		return nil, false
 	}
 	return failed.Item, true
@@ -396,9 +371,9 @@ func transitionErr(err error) error {
 
 func (st *Store) Item(ctx context.Context, batchID string, index int) (store.Item, error) {
 	out, err := st.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName:      aws.String(st.table),
+		TableName:      new(st.table),
 		Key:            itemKey(batchID, index),
-		ConsistentRead: aws.Bool(true),
+		ConsistentRead: new(true),
 	})
 	if err != nil {
 		return store.Item{}, err
@@ -413,7 +388,7 @@ func (st *Store) Item(ctx context.Context, batchID string, index int) (store.Ite
 // META (to tell an unknown batch apart) and FAILED items.
 func (st *Store) Failed(ctx context.Context, batchID string) ([]store.Item, error) {
 	b, err := st.query(ctx, batchID, &dynamodb.QueryInput{
-		FilterExpression:         aws.String("attribute_exists(#size) OR #status = :failed"),
+		FilterExpression:         new("attribute_exists(#size) OR #status = :failed"),
 		ExpressionAttributeNames: map[string]string{"#size": "size", "#status": "status"},
 		ExpressionAttributeValues: map[string]types.AttributeValue{
 			":failed": sAttr(string(store.Failed)),
@@ -432,13 +407,13 @@ func (st *Store) Report(ctx context.Context, batchID string) (store.Batch, error
 func (st *Store) query(ctx context.Context, batchID string, in *dynamodb.QueryInput) (store.Batch, error) {
 	b := store.Batch{ID: batchID}
 	found := false
-	in.TableName = aws.String(st.table)
-	in.KeyConditionExpression = aws.String("pk = :pk")
+	in.TableName = new(st.table)
+	in.KeyConditionExpression = new("pk = :pk")
 	if in.ExpressionAttributeValues == nil {
 		in.ExpressionAttributeValues = map[string]types.AttributeValue{}
 	}
 	in.ExpressionAttributeValues[":pk"] = sAttr("BATCH#" + batchID)
-	in.ConsistentRead = aws.Bool(true)
+	in.ConsistentRead = new(true)
 	p := dynamodb.NewQueryPaginator(st.client, in)
 	for p.HasMorePages() {
 		page, err := p.NextPage(ctx)

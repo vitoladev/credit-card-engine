@@ -59,50 +59,16 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		},
 	})
 
-	fnLogs := awslogs.NewLogGroup(stack, jsii.String("EvaluateLogs"), &awslogs.LogGroupProps{
-		Retention:     awslogs.RetentionDays_TWO_WEEKS,
-		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
-	})
-	fn := awscdklambdagoalpha.NewGoFunction(stack, jsii.String(functionID), &awscdklambdagoalpha.GoFunctionProps{
-		Runtime:      awslambda.Runtime_PROVIDED_AL2023(),
-		Architecture: awslambda.Architecture_ARM_64(),
-		Entry:        jsii.String(lambdaEntry()),
-		Timeout:      awscdk.Duration_Seconds(jsii.Number(lambdaTimeoutS)),
-		MemorySize:   jsii.Number(lambdaMemoryMB),
-		Tracing:      awslambda.Tracing_ACTIVE,
-		LogGroup:     fnLogs,
-		Environment: lambdaEnv(map[string]*string{
-			"DECISIONS_TABLE": table.TableName(),
-			"QUEUE_URL":       queue.QueueUrl(),
-			"BATCH_SIZE":      jsii.String(size),
-		}),
-		Bundling: &awscdklambdagoalpha.BundlingOptions{
-			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`),
-		},
-		ReservedConcurrentExecutions: flociReservedConcurrency(flociEvaluateConcurrency),
-	})
+	fn := goLambda(stack, functionID, "EvaluateLogs", "http", map[string]*string{
+		"DECISIONS_TABLE": table.TableName(),
+		"QUEUE_URL":       queue.QueueUrl(),
+		"BATCH_SIZE":      jsii.String(size),
+	}, flociEvaluateConcurrency)
 	table.GrantReadWriteData(fn)
 	queue.GrantSendMessages(fn)
-	workerLogs := awslogs.NewLogGroup(stack, jsii.String("WorkerLogs"), &awslogs.LogGroupProps{
-		Retention:     awslogs.RetentionDays_TWO_WEEKS,
-		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
-	})
-	worker := awscdklambdagoalpha.NewGoFunction(stack, jsii.String(workerFunctionID), &awscdklambdagoalpha.GoFunctionProps{
-		Runtime:      awslambda.Runtime_PROVIDED_AL2023(),
-		Architecture: awslambda.Architecture_ARM_64(),
-		Entry:        jsii.String(workerEntry()),
-		Timeout:      awscdk.Duration_Seconds(jsii.Number(lambdaTimeoutS)),
-		MemorySize:   jsii.Number(lambdaMemoryMB),
-		Tracing:      awslambda.Tracing_ACTIVE,
-		LogGroup:     workerLogs,
-		Environment: lambdaEnv(map[string]*string{
-			"DECISIONS_TABLE": table.TableName(),
-		}),
-		Bundling: &awscdklambdagoalpha.BundlingOptions{
-			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`),
-		},
-		ReservedConcurrentExecutions: flociReservedConcurrency(flociWorkerConcurrency),
-	})
+	worker := goLambda(stack, workerFunctionID, "WorkerLogs", "worker", map[string]*string{
+		"DECISIONS_TABLE": table.TableName(),
+	}, flociWorkerConcurrency)
 	table.GrantReadWriteData(worker)
 	queue.GrantConsumeMessages(worker)
 	worker.AddEventSource(awslambdaeventsources.NewSqsEventSource(queue, &awslambdaeventsources.SqsEventSourceProps{
@@ -110,26 +76,9 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		ReportBatchItemFailures: jsii.Bool(true),
 	}))
 
-	dlqLogs := awslogs.NewLogGroup(stack, jsii.String("DlqConsumerLogs"), &awslogs.LogGroupProps{
-		Retention:     awslogs.RetentionDays_TWO_WEEKS,
-		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
-	})
-	dlqConsumer := awscdklambdagoalpha.NewGoFunction(stack, jsii.String(dlqFunctionID), &awscdklambdagoalpha.GoFunctionProps{
-		Runtime:      awslambda.Runtime_PROVIDED_AL2023(),
-		Architecture: awslambda.Architecture_ARM_64(),
-		Entry:        jsii.String(dlqEntry()),
-		Timeout:      awscdk.Duration_Seconds(jsii.Number(lambdaTimeoutS)),
-		MemorySize:   jsii.Number(lambdaMemoryMB),
-		Tracing:      awslambda.Tracing_ACTIVE,
-		LogGroup:     dlqLogs,
-		Environment: lambdaEnv(map[string]*string{
-			"DECISIONS_TABLE": table.TableName(),
-		}),
-		Bundling: &awscdklambdagoalpha.BundlingOptions{
-			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`),
-		},
-		ReservedConcurrentExecutions: flociReservedConcurrency(flociDlqConcurrency),
-	})
+	dlqConsumer := goLambda(stack, dlqFunctionID, "DlqConsumerLogs", "dlq", map[string]*string{
+		"DECISIONS_TABLE": table.TableName(),
+	}, flociDlqConcurrency)
 	table.GrantReadWriteData(dlqConsumer)
 	// The event source grants consume on the DLQ, and nothing else on SQS.
 	dlqConsumer.AddEventSource(awslambdaeventsources.NewSqsEventSource(dlq, &awslambdaeventsources.SqsEventSourceProps{
@@ -225,6 +174,29 @@ func lambdaEnv(env map[string]*string) *map[string]*string {
 	}
 	env["AWS_ENDPOINT_URL"] = jsii.String(endpoint)
 	return &env
+}
+
+// goLambda is one engine binary from apps/engine/cmd/<cmd>: arm64, traced,
+// with its own two-week log group.
+func goLambda(stack awscdk.Stack, id, logsID, cmd string, env map[string]*string, flociConcurrency float64) awscdklambdagoalpha.GoFunction {
+	logs := awslogs.NewLogGroup(stack, jsii.String(logsID), &awslogs.LogGroupProps{
+		Retention:     awslogs.RetentionDays_TWO_WEEKS,
+		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
+	})
+	return awscdklambdagoalpha.NewGoFunction(stack, jsii.String(id), &awscdklambdagoalpha.GoFunctionProps{
+		Runtime:      awslambda.Runtime_PROVIDED_AL2023(),
+		Architecture: awslambda.Architecture_ARM_64(),
+		Entry:        jsii.String(cmdEntry(cmd)),
+		Timeout:      awscdk.Duration_Seconds(jsii.Number(lambdaTimeoutS)),
+		MemorySize:   jsii.Number(lambdaMemoryMB),
+		Tracing:      awslambda.Tracing_ACTIVE,
+		LogGroup:     logs,
+		Environment:  lambdaEnv(env),
+		Bundling: &awscdklambdagoalpha.BundlingOptions{
+			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`),
+		},
+		ReservedConcurrentExecutions: flociReservedConcurrency(flociConcurrency),
+	})
 }
 
 // flociReservedConcurrency caps in-flight containers on Floci. Real AWS

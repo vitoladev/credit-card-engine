@@ -2,15 +2,14 @@ package httpapi
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
+	"uuid"
 
 	"github.com/aws/aws-lambda-go/events"
 
@@ -105,7 +104,7 @@ func (h Handler) one(ctx context.Context, req events.APIGatewayV2HTTPRequest) (e
 	}
 	start := time.Now()
 	r := h.evaluate.Execute(ctx, c)
-	id := newID()
+	id := uuid.New().String()
 	// Fail closed (ADR 0001): a decision that was not recorded is not returned.
 	if err := h.decisions.Save(ctx, id, c, r); err != nil {
 		log5xx(err)
@@ -231,12 +230,6 @@ func notFound() events.APIGatewayV2HTTPResponse {
 	return jsonResp(404, map[string]string{"error": "not_found"})
 }
 
-func newID() string {
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
-}
-
 type indexedViolation struct {
 	Index int `json:"index"`
 	domain.Violation
@@ -258,19 +251,15 @@ func parseCustomers(body string) ([]domain.Customer, error) {
 }
 
 func jsonResp(code int, v any) events.APIGatewayV2HTTPResponse {
-	b, err := json.Marshal(v)
+	body, err := json.Marshal(v)
 	if err != nil {
 		log5xx(err)
-		return events.APIGatewayV2HTTPResponse{
-			StatusCode: 500,
-			Headers:    map[string]string{"content-type": "application/json"},
-			Body:       `{"error":"encode_failed"}`,
-		}
+		code, body = 500, []byte(`{"error":"encode_failed"}`)
 	}
 	return events.APIGatewayV2HTTPResponse{
 		StatusCode: code,
 		Headers:    map[string]string{"content-type": "application/json"},
-		Body:       string(b),
+		Body:       string(body),
 	}
 }
 

@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
-	"sort"
 	"strings"
 	"testing"
 )
@@ -68,7 +67,7 @@ func Violations(g Graph) []string {
 			continue
 		}
 		for _, r := range rules {
-			if from != r.from && !strings.HasPrefix(from, r.from+"/") {
+			if !under(from, r.from) {
 				continue
 			}
 			for _, imp := range imports {
@@ -77,14 +76,14 @@ func Violations(g Graph) []string {
 					continue
 				}
 				for _, forbidden := range r.to {
-					if to == forbidden || strings.HasPrefix(to, forbidden+"/") {
+					if under(to, forbidden) {
 						out = append(out, from+" -> "+to+" ("+r.name+")")
 					}
 				}
 			}
 		}
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 
@@ -92,10 +91,7 @@ func stripModule(importPath string) (string, bool) {
 	if importPath == modulePrefix {
 		return "", true
 	}
-	if !strings.HasPrefix(importPath, modulePrefix+"/") {
-		return "", false
-	}
-	return strings.TrimPrefix(importPath, modulePrefix+"/"), true
+	return strings.CutPrefix(importPath, modulePrefix+"/")
 }
 
 func ExternalImportViolations(g Graph) []string {
@@ -106,22 +102,23 @@ func ExternalImportViolations(g Graph) []string {
 			continue
 		}
 		for _, imp := range imports {
-			if awsIn(from, "internal/domain", "internal/rules", "internal/evaluate", "internal/store", "internal/queue", "internal/submit", "internal/report", "internal/processjob", "internal/recovery", "internal/markfailed") &&
-				(strings.HasPrefix(imp, "github.com/aws/") || strings.HasPrefix(imp, "github.com/aws/aws-cdk-go")) {
+			if underAny(from, "internal/domain", "internal/rules", "internal/evaluate", "internal/store", "internal/queue", "internal/submit", "internal/report", "internal/processjob", "internal/recovery", "internal/markfailed") &&
+				strings.HasPrefix(imp, "github.com/aws/") {
 				out = append(out, from+" -> "+imp+" (pure packages import AWS)")
 			}
 		}
 	}
-	return slices.Sorted(slices.Values(out))
+	slices.Sort(out)
+	return out
 }
 
-func awsIn(from string, prefixes ...string) bool {
-	for _, prefix := range prefixes {
-		if from == prefix || strings.HasPrefix(from, prefix+"/") {
-			return true
-		}
-	}
-	return false
+// under reports whether pkg is dir or a package below it.
+func under(pkg, dir string) bool {
+	return pkg == dir || strings.HasPrefix(pkg, dir+"/")
+}
+
+func underAny(pkg string, dirs ...string) bool {
+	return slices.ContainsFunc(dirs, func(dir string) bool { return under(pkg, dir) })
 }
 
 func TestRealModuleObeysTheDAG(t *testing.T) {

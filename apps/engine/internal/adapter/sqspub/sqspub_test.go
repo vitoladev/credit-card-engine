@@ -50,7 +50,7 @@ func jobs(n int) []queue.Job {
 func TestPublishSendsEveryJob(t *testing.T) {
 	cfg := awsConfig(t)
 	client := sqs.NewFromConfig(cfg)
-	created, err := client.CreateQueue(t.Context(), &sqs.CreateQueueInput{QueueName: aws.String("sqspub-test-" + t.Name())})
+	created, err := client.CreateQueue(t.Context(), &sqs.CreateQueueInput{QueueName: new("sqspub-test-" + t.Name())})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestPublishDeliversTheTraceHeaderOnTheMessage(t *testing.T) {
 	t.Setenv("_X_AMZN_TRACE_ID", lambdaTraceHeader)
 	cfg := awsConfig(t)
 	client := sqs.NewFromConfig(cfg)
-	created, err := client.CreateQueue(t.Context(), &sqs.CreateQueueInput{QueueName: aws.String("sqspub-trace-" + t.Name())})
+	created, err := client.CreateQueue(t.Context(), &sqs.CreateQueueInput{QueueName: new("sqspub-trace-" + t.Name())})
 	if err != nil {
 		t.Fatal(err)
 	}
