@@ -35,7 +35,10 @@ const customers = [
   { name: "Joana", cpf: "66677788830", credit_score: 750, current_invoice_cents: 0, credit_limit_cents: 0, late_payments: 0, monthly_spend_cents: [10000] },
   { name: "Kai", cpf: "77788899941", credit_score: 800, current_invoice_cents: 20000, credit_limit_cents: 600000, late_payments: 0, monthly_spend_cents: [80000, 70000, 75000] },
 ];
-const batch = JSON.stringify(customers);
+// LOADTEST_BATCH_CUSTOMERS sets how many customers each batch carries: a
+// number, or a range "min-max" drawn at random per request (for example 3-5).
+// The default is all 10 customers above.
+const [batchMin, batchMax] = parseRange(__ENV.LOADTEST_BATCH_CUSTOMERS || String(customers.length));
 const singles = customers.map((c) => JSON.stringify(c));
 
 const { protocol, host, pathPrefix } = splitBase(base);
@@ -89,10 +92,12 @@ export default function () {
     });
     return;
   }
-  const res = post("/evaluations/batch", batch);
+  const size = batchMin + Math.floor(Math.random() * (batchMax - batchMin + 1));
+  const picked = Array.from({ length: size }, () => customers[Math.floor(Math.random() * customers.length)]);
+  const res = post("/evaluations/batch", JSON.stringify(picked));
   check(res, {
     "status 202": (r) => r.status === 202,
-    queued: (r) => r.json("queued") === customers.length,
+    queued: (r) => r.json("queued") === size,
     batch_id: (r) => Boolean(r.json("batch_id")),
   });
 }
@@ -106,6 +111,16 @@ function post(route, body) {
     body,
   });
   return http.post(signed.url, signed.body, { headers: signed.headers });
+}
+
+function parseRange(raw) {
+  const m = /^(\d+)(?:-(\d+))?$/.exec(raw.trim());
+  const lo = m ? Number(m[1]) : NaN;
+  const hi = m && m[2] ? Number(m[2]) : lo;
+  if (!(lo >= 1 && hi >= lo)) {
+    throw new Error(`LOADTEST_BATCH_CUSTOMERS must be N or MIN-MAX with 1 <= MIN <= MAX, got "${raw}"`);
+  }
+  return [lo, hi];
 }
 
 function splitBase(raw) {

@@ -37,6 +37,10 @@ services:
       FLOCI_DEFAULT_ACCOUNT_ID: "000000000000"
       FLOCI_HOSTNAME: floci
       FLOCI_BASE_URL: http://floci:4566
+      # Event source mappings poll every 100 ms instead of 1 s. Floci runs one
+      # poll per mapping at a time, so the SQS worker and the stream relay drain
+      # at most one batch per poll: at 1 s that is ~10 items/s.
+      FLOCI_SERVICES_LAMBDA_POLL_INTERVAL_MS: "100"
 
 volumes:
   floci-data:
