@@ -23,7 +23,7 @@ and the stack describe the cut.
 | `internal/flocitest` | Test-only. AWS config for Floci, fresh tables (stream on) and queues, the table's stream as Lambda events, and faults injected in the SDK. |
 | `cmd/http` `cmd/relay` `cmd/worker` `cmd/dlq` | Composition root. JSON `slog` on stdout. |
 | `packages/infra-iac` | CDK. HTTP API with IAM authorizer except `/health`, four Lambdas, the table's stream, SQS with its DLQ, DynamoDB, logs, dashboard, alarms. |
-| `packages/loadtest` | k6 at `LOADTEST_RATE` req/s (default 100 locally) on `POST /evaluations/batch` for 10 s, 8 VUs on Floci. Local gate is p95 under 2 s and under 1% errors. p99 under 800 ms is the real-AWS NFR. The 1000 req/s NFR run (10k requests) is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack. |
+| `packages/loadtest` | k6 at `LOADTEST_RATE` req/s (default 100 locally) on `POST /evaluations/batch` for 10 s, 8 VUs on Floci. `LOADTEST_BATCH_CUSTOMERS` sets the customers per batch: a number, or a range such as `3-5` drawn at random per request (default 10). Local gate is p95 under 2 s and under 1% errors. p99 under 800 ms is the real-AWS NFR. The 1000 req/s NFR run (10k requests) is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack. |
 
 ## Runtime
 
@@ -463,11 +463,14 @@ in that list.
 Run on Floci in the Dev Container on 2026-09-23, on this branch. The
 numbers are the emulator's ceiling, not the engine's: Floci starts one container
 per Lambda invocation, the local stack caps concurrency (Evaluate 8, Worker 4),
-and Floci's SQS poller makes one `ReceiveMessage` per second.
+and Floci runs one poll at a time per event source mapping, every
+`FLOCI_SERVICES_LAMBDA_POLL_INTERVAL_MS` (1 s by default; the Dev Container
+sets 100 ms).
 
 | Run | Command | Result |
 |---|---|---|
 | Sync, 1000 req/s for 10 s | `LOADTEST_PATH=single LOADTEST_RATE=1000 make loadtest` | 18.5 req/s reached (196 sent, 9,805 dropped by k6 for lack of VUs), 0 errors, HTTP p95 734 ms. The Lambda's own time is p50 373 ms, mostly the emulator's `PutItem`. |
+| Batch, 100 req/s for 10 s, 3 to 5 customers per batch | `LOADTEST_PATH=batch LOADTEST_RATE=100 LOADTEST_BATCH_CUSTOMERS=3-5 make loadtest` | 132 batches sent, about 10.4 req/s reached (869 dropped by k6), 0 errors, HTTP p95 4.0 s. All 522 items decided (0 failed) 43 s after the load ended; the queue drained at ~12.4 items/s. Floci serves about 10 invocations a second in total: 8 or 32 concurrent requests reach the same ~10 req/s, and 32 only raises the median from 0.5 s to 2.7 s, so the stack keeps 8. A 100 ms poll interval raised the drain from ~9.5 to ~12.4 items/s. 100 req/s needs a real AWS stack. |
 | Batch, 100 batches × 10 customers | `LOADTEST_PATH=batch LOADTEST_RATE=10 make loadtest` | 89 batches sent (k6 dropped 11 when Floci slowed), 0 errors. All 890 items decided, 0 failed, in 92 s: ~9.7 items/s, because the poller received 10 messages per poll, one poll a second. `ItemEndToEndMs` p50 43 s, p99 81 s, all of it queue wait. An earlier run with the sequential worker decided all 1,000 items of 100 batches (400 approved, 600 denied) at the same ~9.4 items/s, with submit p50 82 ms. |
 
 A worker batch of 50 made Floci worse: its poller received 1 message per poll

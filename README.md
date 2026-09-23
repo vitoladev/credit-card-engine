@@ -190,7 +190,7 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 | Target | What it does |
 |---|---|
 | `make test` | `turbo run test` for the engine, the Lambdas, and the stack. Then reaps Floci Lambda containers this stack left behind. |
-| `make loadtest` | k6 against `POST /evaluations/batch` on a local deploy. `LOADTEST_PATH=single` targets `POST /evaluations` instead. |
+| `make loadtest` | k6 against `POST /evaluations/batch` on a local deploy. `LOADTEST_PATH=single` targets `POST /evaluations` instead. `LOADTEST_BATCH_CUSTOMERS=3-5` sends 3 to 5 customers per batch, at random. |
 | `make local-bootstrap` | CDK bootstrap on Floci account `000000000000`. |
 | `make local-deploy` | `cdklocal deploy`. Works once per stack on Floci. |
 | `make local-redeploy` | `local-destroy` then `local-deploy`. Use it to deploy a change: Floci cannot update the relay's stream event source mapping in place. The table starts empty. |
@@ -207,6 +207,12 @@ runs are against a real AWS stack. Results and the Floci limits behind them are
 in [Benchmarks on Floci](docs/architecture.md#benchmarks-on-floci).
 
 Floci differs from AWS in ways that change what a local run proves:
+
+- Floci serves about 10 Lambda invocations a second in total, so a local
+  `make loadtest` reaches ~10 req/s whatever `LOADTEST_RATE` asks for. The
+  Dev Container sets `FLOCI_SERVICES_LAMBDA_POLL_INTERVAL_MS=100` so the
+  queue drains at ~12 items/s instead of ~10. Recreate the `floci` service
+  after changing it.
 
 - Its CloudFormation ignores point-in-time recovery, the SQS batching
   window, and the table's TTL. The CDK tests assert all three in the
