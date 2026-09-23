@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"uuid"
 
 	"github.com/aws/aws-lambda-go/events"
@@ -207,6 +208,12 @@ func TestFailRetryCancelTransitions(t *testing.T) {
 		t.Fatalf("failed=%+v", failed)
 	}
 
+	before, err := st.Item(ctx, "b1", id[0])
+	if err != nil || before.QueuedAt.IsZero() || time.Since(before.QueuedAt) > time.Minute {
+		t.Fatalf("queued_at at create: item=%+v err=%v", before, err)
+	}
+	time.Sleep(5 * time.Millisecond)
+
 	// Two operators retry the same attempt: only one wins.
 	wantErr("retry 0", st.Retry(ctx, "b1", id[0], 1), nil)
 	wantErr("retry 0 again", st.Retry(ctx, "b1", id[0], 1), batch.ErrInvalidTransition)
@@ -215,6 +222,9 @@ func TestFailRetryCancelTransitions(t *testing.T) {
 	it, err := st.Item(ctx, "b1", id[0])
 	if err != nil || it.ID != id[0] || it.Status != batch.Queued || it.Attempts != 2 || it.Customer.Name != "Ana" {
 		t.Fatalf("item=%+v err=%v", it, err)
+	}
+	if !it.QueuedAt.After(before.QueuedAt) {
+		t.Fatalf("retry kept queued_at %v, was %v", it.QueuedAt, before.QueuedAt)
 	}
 	if _, err := st.Item(ctx, "b1", missing); !errors.Is(err, batch.ErrNotFound) {
 		t.Fatalf("item missing: err=%v", err)

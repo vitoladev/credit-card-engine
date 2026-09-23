@@ -79,6 +79,8 @@ func DecidedAs(r domain.Result) ItemStatus {
 type Item struct {
 	ID       string
 	Customer domain.Customer
+	// QueuedAt is when the item last became queued: at submit, or at a retry.
+	QueuedAt time.Time
 	Status   ItemStatus
 	Attempts int
 	Result   domain.Result
@@ -165,7 +167,9 @@ type Publisher interface {
 
 // Emitter records what happened to items as metrics.
 type Emitter interface {
-	ItemDecided(batchID, itemID string, r domain.Result, latency time.Duration)
+	// ItemDecided reports a decided item: latency is the evaluation alone,
+	// sinceQueued the time from queued to decided.
+	ItemDecided(batchID, itemID string, r domain.Result, latency, sinceQueued time.Duration)
 	ItemFailed(batchID, itemID string, attempt int)
 }
 
@@ -272,7 +276,7 @@ func (m Module) Process(ctx context.Context, e ItemEvent) error {
 	if err != nil {
 		return err
 	}
-	m.emit.ItemDecided(e.BatchID, e.ItemID, r, time.Since(start))
+	m.emit.ItemDecided(e.BatchID, e.ItemID, r, time.Since(start), time.Since(it.QueuedAt))
 	return nil
 }
 

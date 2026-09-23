@@ -31,12 +31,13 @@ type EMF struct{}
 
 // Evaluated writes the decision line of a single evaluation.
 func (EMF) Evaluated(decisionID string, r domain.Result, latency time.Duration) {
-	decision(r, latency, ids{decisionID: decisionID})
+	decision(r, latency, 0, ids{decisionID: decisionID})
 }
 
-// ItemDecided writes the decision line of a batch item.
-func (EMF) ItemDecided(batchID, itemID string, r domain.Result, latency time.Duration) {
-	decision(r, latency, ids{batchID: batchID, itemID: itemID})
+// ItemDecided writes the decision line of a batch item, with ItemEndToEndMs:
+// the time from queued (submit or retry) to decided.
+func (EMF) ItemDecided(batchID, itemID string, r domain.Result, latency, sinceQueued time.Duration) {
+	decision(r, latency, sinceQueued, ids{batchID: batchID, itemID: itemID})
 }
 
 // ItemFailed writes one ItemsFailed line for an item that moved to failed.
@@ -60,7 +61,7 @@ type ids struct {
 	itemID     string
 }
 
-func decision(r domain.Result, latency time.Duration, id ids) {
+func decision(r domain.Result, latency, sinceQueued time.Duration, id ids) {
 	reason := ""
 	if len(r.Reasons) > 0 {
 		reason = r.Reasons[0]
@@ -96,6 +97,14 @@ func decision(r domain.Result, latency time.Duration, id ids) {
 				Metrics:    []metricDef{{Name: "DenyByReason", Unit: "Count"}},
 			},
 		}
+	}
+	if sinceQueued > 0 {
+		values["ItemEndToEndMs"] = sinceQueued.Milliseconds()
+		metrics = append(metrics, metricSet{
+			Namespace:  Namespace,
+			Dimensions: [][]string{},
+			Metrics:    []metricDef{{Name: "ItemEndToEndMs", Unit: "Milliseconds"}},
+		})
 	}
 	props := []slog.Attr{
 		slog.String("decision", string(r.Decision)),

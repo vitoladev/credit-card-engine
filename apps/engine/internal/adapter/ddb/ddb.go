@@ -47,6 +47,10 @@ func New(cfg aws.Config, table string) *Store {
 }
 
 func sAttr(v string) *types.AttributeValueMemberS { return &types.AttributeValueMemberS{Value: v} }
+func n64Attr(v int64) *types.AttributeValueMemberN {
+	return &types.AttributeValueMemberN{Value: strconv.FormatInt(v, 10)}
+}
+
 func nAttr(v int) *types.AttributeValueMemberN {
 	return &types.AttributeValueMemberN{Value: strconv.Itoa(v)}
 }
@@ -94,6 +98,7 @@ func (st *Store) Get(ctx context.Context, decisionID string) (domain.Result, err
 // Create writes every ITEM# row with BatchWriteItem, several chunks in flight
 // at once. A failed write deletes every row for the batch.
 func (st *Store) Create(ctx context.Context, batchID string, items []batch.Item) error {
+	now := time.Now().UnixMilli()
 	puts := make([]types.WriteRequest, 0, len(items))
 	for _, it := range items {
 		raw, err := json.Marshal(it.Customer)
@@ -105,6 +110,7 @@ func (st *Store) Create(ctx context.Context, batchID string, items []batch.Item)
 		item["customer"] = sAttr(string(raw))
 		item["status"] = sAttr(string(batch.Queued))
 		item["attempts"] = nAttr(1)
+		item["queued_at"] = n64Attr(now)
 		puts = append(puts, types.WriteRequest{PutRequest: &types.PutRequest{Item: item}})
 	}
 
@@ -193,10 +199,12 @@ func (st *Store) Fail(ctx context.Context, batchID, itemID string, attempt int) 
 // exceed it.
 func (st *Store) Retry(ctx context.Context, batchID, itemID string, attempt int) error {
 	err := st.move(ctx, batchID, itemID, batch.Queued, batch.Failed, itemUpdate{
-		update: "SET #status = :to, #attempts = #attempts + :one",
+		update: "SET #status = :to, #attempts = #attempts + :one, #queued_at = :now",
 		cond:   "#status = :from AND #attempts = :attempt AND #attempts < :max",
-		names:  map[string]string{"#attempts": "attempts"},
-		values: map[string]types.AttributeValue{":attempt": nAttr(attempt), ":max": nAttr(batch.MaxAttempts), ":one": nAttr(1)},
+		names:  map[string]string{"#attempts": "attempts", "#queued_at": "queued_at"},
+		values: map[string]types.AttributeValue{
+			":attempt": nAttr(attempt), ":max": nAttr(batch.MaxAttempts), ":one": nAttr(1), ":now": n64Attr(time.Now().UnixMilli()),
+		},
 	})
 	old, ok := conditionFailed(err)
 	if !ok || len(old) == 0 {
@@ -459,6 +467,11 @@ func batchItem(row map[string]types.AttributeValue) (batch.Item, error) {
 		return batch.Item{}, err
 	}
 	it.Status = batch.ItemStatus(status)
+	queuedAt, err := readN(row, "queued_at")
+	if err != nil {
+		return batch.Item{}, err
+	}
+	it.QueuedAt = time.UnixMilli(int64(queuedAt))
 	if err := unmarshalAttr(row, "customer", &it.Customer); err != nil {
 		return batch.Item{}, err
 	}

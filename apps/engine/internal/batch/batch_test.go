@@ -30,10 +30,11 @@ var threeCustomers = []domain.Customer{
 }
 
 type itemEvent struct {
-	batchID string
-	itemID  string
-	attempt int
-	result  domain.Result
+	batchID     string
+	itemID      string
+	attempt     int
+	result      domain.Result
+	sinceQueued time.Duration
 }
 
 // recorder is the test Emitter.
@@ -43,10 +44,10 @@ type recorder struct {
 	failed  []itemEvent
 }
 
-func (r *recorder) ItemDecided(batchID, itemID string, res domain.Result, _ time.Duration) {
+func (r *recorder) ItemDecided(batchID, itemID string, res domain.Result, _, sinceQueued time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.decided = append(r.decided, itemEvent{batchID: batchID, itemID: itemID, result: res})
+	r.decided = append(r.decided, itemEvent{batchID: batchID, itemID: itemID, result: res, sinceQueued: sinceQueued})
 }
 
 func (r *recorder) ItemFailed(batchID, itemID string, attempt int) {
@@ -271,6 +272,13 @@ func TestSubmittedBatchCompletes(t *testing.T) {
 	assertNoFullCPF(t, got)
 	if len(h.emit.decided) != 3 || len(h.emit.failed) != 0 {
 		t.Fatalf("emitted %+v", h.emit)
+	}
+	// Queued to decided spans the submit, the relay, and the worker; a whole
+	// minute would mean queued_at was not read.
+	for _, d := range h.emit.decided {
+		if d.sinceQueued <= 0 || d.sinceQueued > time.Minute {
+			t.Fatalf("since queued=%v", d.sinceQueued)
+		}
 	}
 }
 

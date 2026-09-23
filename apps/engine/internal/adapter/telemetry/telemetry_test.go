@@ -127,6 +127,9 @@ func TestEvaluatedApprovalWritesOneApprovedLine(t *testing.T) {
 	if _, ok := got["batch_id"]; ok {
 		t.Fatalf("single evaluation has a batch_id: %v", got)
 	}
+	if _, ok := got["ItemEndToEndMs"]; ok || hasMetric(got, "ItemEndToEndMs") {
+		t.Fatalf("single evaluation has ItemEndToEndMs: %v", got)
+	}
 	if bytes.Contains(buf.Bytes(), []byte("Ana")) {
 		t.Fatalf("leaked the customer name: %s", buf.String())
 	}
@@ -136,8 +139,11 @@ func TestItemDenialWritesDeniedAndDenyByReason(t *testing.T) {
 	buf := captureLogs(t)
 	telemetry.EMF{}.ItemDecided("b1", "0198f3a2-7c1e-7b3a-9d2f-4e5a6b7c8d90", domain.Result{
 		Name: "Bruno", CPFMasked: "***09", Decision: domain.Denied, Reasons: []string{"score_below_600"},
-	}, time.Millisecond)
+	}, time.Millisecond, 1500*time.Millisecond)
 	got := oneLine(t, buf)
+	if !hasMetric(got, "ItemEndToEndMs") || got["ItemEndToEndMs"] != 1500.0 {
+		t.Fatalf("end to end: %v", got)
+	}
 	if !hasMetric(got, "Denied") || got["Denied"] != 1.0 {
 		t.Fatalf("%v", got)
 	}

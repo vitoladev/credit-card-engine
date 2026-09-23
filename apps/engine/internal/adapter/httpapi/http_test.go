@@ -34,9 +34,9 @@ const threeCustomers = `[
 
 type discard struct{}
 
-func (discard) Evaluated(string, domain.Result, time.Duration)           {}
-func (discard) ItemDecided(string, string, domain.Result, time.Duration) {}
-func (discard) ItemFailed(string, string, int)                           {}
+func (discard) Evaluated(string, domain.Result, time.Duration)                          {}
+func (discard) ItemDecided(string, string, domain.Result, time.Duration, time.Duration) {}
+func (discard) ItemFailed(string, string, int)                                          {}
 
 // harness is the HTTP handler over the real modules on Floci.
 type harness struct {
