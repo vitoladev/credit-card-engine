@@ -1,4 +1,4 @@
-.PHONY: test synth floci-up floci-down floci-reap local-bootstrap local-deploy local-destroy api-url loadtest
+.PHONY: test synth floci-up floci-down floci-reap local-bootstrap local-deploy local-redeploy local-destroy api-url loadtest
 
 COMPOSE := docker compose -f .devcontainer/docker-compose.yml
 
@@ -31,6 +31,10 @@ local-bootstrap:
 
 local-deploy:
 	. scripts/floci.env && cdklocal deploy --require-approval never
+
+# Floci cannot update the relay's stream event source mapping in place, so a
+# second deploy fails. Recreate the stack instead (the table starts empty).
+local-redeploy: local-destroy local-deploy
 
 local-destroy:
 	. scripts/floci.env && cdklocal destroy --force; status=$$?; bash scripts/floci-reap.sh; exit $$status

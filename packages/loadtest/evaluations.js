@@ -14,6 +14,15 @@ if (!Number.isInteger(rate) || rate <= 0) {
   throw new Error(`LOADTEST_RATE must be a positive integer, got "${__ENV.LOADTEST_RATE}"`);
 }
 
+// LOADTEST_PATH picks the route: "batch" posts the 10 customers below to
+// POST /evaluations/batch, "single" posts one of them per request to
+// POST /evaluations (the sync path, 1 s SLO).
+const path = __ENV.LOADTEST_PATH || "batch";
+if (path !== "batch" && path !== "single") {
+  throw new Error(`LOADTEST_PATH must be batch or single, got "${__ENV.LOADTEST_PATH}"`);
+}
+const duration = __ENV.LOADTEST_DURATION || "10s";
+
 const customers = [
   { name: "Ana", cpf: "39053344705", credit_score: 780, current_invoice_cents: 50000, credit_limit_cents: 500000, late_payments: 0, monthly_spend_cents: [80000, 90000, 70000] },
   { name: "Eva", cpf: "22233344405", credit_score: 820, current_invoice_cents: 100000, credit_limit_cents: 1000000, late_payments: 0, monthly_spend_cents: [100000, 110000, 90000] },
@@ -27,6 +36,7 @@ const customers = [
   { name: "Kai", cpf: "77788899941", credit_score: 800, current_invoice_cents: 20000, credit_limit_cents: 600000, late_payments: 0, monthly_spend_cents: [80000, 70000, 75000] },
 ];
 const batch = JSON.stringify(customers);
+const singles = customers.map((c) => JSON.stringify(c));
 
 const { protocol, host, pathPrefix } = splitBase(base);
 const signer = new SignatureV4({
@@ -53,7 +63,7 @@ export const options = {
       executor: "constant-arrival-rate",
       rate,
       timeUnit: "1s",
-      duration: "10s",
+      duration,
       preAllocatedVUs,
       maxVUs,
     },
@@ -71,19 +81,31 @@ export const options = {
 };
 
 export default function () {
-  const signed = signer.sign({
-    method: "POST",
-    endpoint: new Endpoint(`${protocol}://${host}`),
-    path: `${pathPrefix}/evaluations/batch`,
-    headers: { "content-type": "application/json" },
-    body: batch,
-  });
-  const res = http.post(signed.url, signed.body, { headers: signed.headers });
+  if (path === "single") {
+    const res = post("/evaluations", singles[__ITER % singles.length]);
+    check(res, {
+      "status 200": (r) => r.status === 200,
+      decision_id: (r) => Boolean(r.json("decision_id")),
+    });
+    return;
+  }
+  const res = post("/evaluations/batch", batch);
   check(res, {
     "status 202": (r) => r.status === 202,
     queued: (r) => r.json("queued") === customers.length,
     batch_id: (r) => Boolean(r.json("batch_id")),
   });
+}
+
+function post(route, body) {
+  const signed = signer.sign({
+    method: "POST",
+    endpoint: new Endpoint(`${protocol}://${host}`),
+    path: `${pathPrefix}${route}`,
+    headers: { "content-type": "application/json" },
+    body,
+  });
+  return http.post(signed.url, signed.body, { headers: signed.headers });
 }
 
 function splitBase(raw) {
