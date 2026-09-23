@@ -99,6 +99,12 @@ attempt, and status, with no customer data. The events that queue an item are
 the queue's messages.
 _Avoid_: Job, command
 
+**Idempotency key**:
+A key the client sends with an evaluation request (`Idempotency-Key`) so a
+retry of the same request gets the first response instead of running again.
+It lives 24 hours.
+_Avoid_: Request ID, dedup key
+
 **Invalid customer**:
 A customer whose data fails validation (for example a CPF with wrong check
 digits). An invalid customer is never evaluated and gets no decision.

@@ -57,7 +57,10 @@ a consumer can drop a duplicate. The worker reads the item with a consistent
 - A publish that fails in the relay leaves the item `QUEUED`. The relay reports
   the record, and the event source mapping delivers it again (bisecting the
   batch on an error). A record the relay cannot read is logged
-  (`stream_record_skipped`) and skipped, so it does not block its shard.
+  (`stream_record_skipped`) and skipped, so it does not block its shard. The
+  `RelaySkippedRecords` alarm counts those lines: a skipped record of a
+  queued item leaves it `QUEUED` with no message, and the iterator age cannot
+  show it because the record was acknowledged.
 - The `RelayIteratorAge` alarm fires when the relay falls 60 seconds behind.
   An item stays `QUEUED` with no message only if the relay is down for the
   full 24 hours of the stream. To recover, update those items (any write
@@ -65,7 +68,10 @@ a consumer can drop a duplicate. The worker reads the item with a consistent
   ignores an event whose item already moved on.
 - A `Create` that fails after some rows are written leaves stream records for
   rows it then deletes. The relay publishes them, the worker finds no item,
-  and the DLQ consumer acknowledges them.
+  and the DLQ consumer acknowledges them. The delete runs on its own 2 s
+  deadline, past the request's. If it fails too, the rows stay and are
+  evaluated: the log line `batch_rollback_failed` names the `batch_id` and the
+  `EvaluateStoreBookkeeping` alarm fires.
 - Reprocessing past the stream uses the table itself: list the items by status
   and send their events again. It is documented, not built.
 - This supersedes the point of ADR 0001 where a failed publish fails the item.

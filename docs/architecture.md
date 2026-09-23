@@ -306,7 +306,7 @@ One DynamoDB table, `Decisions`, with generic keys `pk` (string) and `sk`
 | `pk` | `sk` | Attributes |
 |---|---|---|
 | `DECISION#<decision_id>` | `RESULT` | `customer` (input JSON), `result` (decision JSON) |
-| `BATCH#<batch_id>` | `ITEM#<item_id>` | `item_id`, `customer` (input JSON), `status`, `attempts`, `result` once decided |
+| `BATCH#<batch_id>` | `ITEM#<item_id>` | `item_id`, `customer` (input JSON), `status`, `attempts`, `queued_at`, `result` once decided |
 | `IDEMPOTENCY#<key>` | `KEY` | `fingerprint`, `owner`, `state`, `lease_until`, `expires_at` (TTL), `status_code` and `body` once `DONE` ([ADR 0005](adr/0005-idempotency-key-claimed-with-a-conditional-write.md)) |
 
 A batch is its item rows. There is no batch row: an unknown batch is a
@@ -314,8 +314,11 @@ partition with no rows. `item_id` is a version 7 UUID, so a Query on the
 partition returns items in submission order.
 
 An `IDEMPOTENCY#` row holds one `Idempotency-Key` for 24 hours: the table's
-TTL attribute is `expires_at`. It carries no customer data, only the
-fingerprint of the request and the response it replays.
+TTL attribute is `expires_at`. It holds the fingerprint of the request and
+the response it replays. A replayed `POST /evaluations` response carries the
+customer's name and masked CPF, so the row keeps the name for its 24 hours,
+under the table's encryption, and it travels in the table's stream like
+every other row.
 
 Each batch item stores the input and the item status together. Stored
 decisions and batch items keep the full CPF and name with no TTL. They are
@@ -447,12 +450,12 @@ in that list.
 
 | Criterion | How the design answers |
 |---|---|
-| Latency ≤ 1 s | The sync path evaluates in memory and makes one DynamoDB write. Lambda timeout 3 s, 256 MB, arm64. HTTP p99 is alarmed at 800 ms. The batch path answers after one `BatchWriteItem`; each item's queued-to-decided time is `ItemEndToEndMs`, alarmed at p99 > 5 s. See [Benchmarks on Floci](#benchmarks-on-floci). |
+| Latency ≤ 1 s | The sync path evaluates in memory and makes one DynamoDB write, or three with an `Idempotency-Key` (claim, decision, complete). Lambda timeout 3 s, 256 MB, arm64. HTTP p99 is alarmed at 800 ms. The batch path answers after one `BatchWriteItem`; each item's queued-to-decided time is `ItemEndToEndMs`, alarmed at p99 > 5 s. See [Benchmarks on Floci](#benchmarks-on-floci). |
 | Accuracy | Customers validated at the edge (CPF check digits, no negatives). Deterministic rules. Table tests in `domain` and `rules`. Stable reason code per rule. |
 | Scale 10k/min | HTTP writes the items (202), the relay publishes from the stream, and the worker takes up to 50 messages per invocation (1 s window) and handles them concurrently. DynamoDB is on-demand. Stage throttle is 1200 rps / 2400 burst. On AWS, Lambda scales an SQS source to 5 concurrent batches and then adds up to 300 invocations a minute, up to 1,250. Floci cannot show this: see [Benchmarks on Floci](#benchmarks-on-floci). The 1000 req/s runs against real AWS are `LOADTEST_PATH=single LOADTEST_RATE=1000 make loadtest` and `LOADTEST_PATH=batch LOADTEST_RATE=100 make loadtest`. They have not been run: there is no AWS account in this cut. |
 | Extensibility | Ordered `rules.Rule` list and score bands, assembled in `rules.NewPolicy()`. `architecture_test.go` keeps domain, rules, and the modules off AWS. |
 | LGPD | CPF masked on `Result` and in logs. Encryption at rest on the table and both queues (SSE-SQS), and the queues deny requests not over TLS. IAM authorizer on every HTTP route except `/health`. Full CPF and name stay in DynamoDB. Queue messages and the relay carry no customer data. The HTTP Lambda has no access to the queue. |
-| Observability | 14-day logs. One EMF line per decision (`Approved`/`Denied`, `DenyByReason`, `DecisionLatencyMs`) and per failed item (`ItemsFailed`). Dashboard `CreditCardEngine`. Alarms on API 5xx, worker errors, DLQ consumer errors, DLQ depth, relay iterator age over 60 s, and HTTP p99 > 800 ms. |
+| Observability | 14-day logs. One EMF line per decision (`Approved`/`Denied`, `DenyByReason`, `DecisionLatencyMs`) and per failed item (`ItemsFailed`). Dashboard `CreditCardEngine`. Alarms on API 5xx, worker errors, DLQ consumer errors, DLQ depth, relay iterator age over 60 s, queue backlog, batch item p99 > 5 s, HTTP p99 > 800 ms, and two log metric filters: a relay stream record skipped (`RelaySkippedRecords`) and a failed batch rollback or idempotency key write (`EvaluateStoreBookkeeping`). |
 | Resilience | `rules` has no I/O. `evaluate` records after the decision, and the sync path fails closed with `503`. On batch, SQS isolates HTTP from the worker. The worker reports partial batch failures, a record that fails 5 receives goes to the DLQ, and the DLQ consumer marks its item `FAILED` for an operator to retry or cancel. Submit and retry only write the item; the table's stream feeds a relay that publishes, and retries a failed publish for up to 24 h (ADR 0004). Every transition is conditional. On-demand table with point-in-time recovery (35 days). 5xx alarm on the sync path. |
 
 ### Benchmarks on Floci
@@ -497,8 +500,9 @@ with `idempotent-replayed: true`, and nothing is evaluated or stored again.
 The same key with another body is `422 {"error":"idempotency_key_reused"}`,
 while the first request still runs is `409 {"error":"idempotency_key_in_progress"}`,
 and a key that is empty, longer than 255, or not visible ASCII is
-`400 {"error":"invalid_idempotency_key","max_length":255}`. A non-`2xx`
-response frees the key. Keys live 24 hours.
+`400 {"error":"invalid_idempotency_key","max_length":255}`. When the key
+itself cannot be claimed, the route answers `503 {"error":"store_failed"}`
+and nothing runs. A non-`2xx` response frees the key. Keys live 24 hours.
 
 One page of items, `GET /batches/{id}/items?limit=2`:
 

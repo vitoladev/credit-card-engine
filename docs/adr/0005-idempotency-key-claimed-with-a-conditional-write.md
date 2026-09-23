@@ -53,6 +53,16 @@ Without the header, a request runs every time, as before.
   time, so the claim's condition also treats an expired row as absent.
 - The stream carries the key rows. The relay reads only `BATCH#` rows, so it
   skips them.
+- A stored `POST /evaluations` response holds the customer's name and masked
+  CPF, so the key row keeps the name for 24 hours, like the `DECISION#` row
+  it points to keeps it for good.
+- A failed complete or release is logged (`idempotency_complete_failed`,
+  `idempotency_release_failed`) and alarmed through the
+  `EvaluateStoreBookkeeping` log metric filter. The response still goes out.
+- A claim that fails answers `503 {"error":"store_failed"}`, and nothing runs.
+- The lease must stay longer than the HTTP Lambda's timeout. Raising the
+  timeout past 10 s lets a second request take a key while the first still
+  runs.
 
 ## Considered options
 

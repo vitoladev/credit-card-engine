@@ -28,11 +28,12 @@ commit and says why.
 | Domain | `internal/domain` | standard library only |
 | Policy | `internal/rules` | `domain` |
 | Modules | `internal/evaluate`, `internal/batch` | `domain`, `rules`; never each other, never an adapter |
+| Request guard | `internal/idempotency` | standard library only; imported by `adapter/httpapi` and implemented by `adapter/ddb` |
 | Adapters | `internal/adapter/*` | modules, `domain`, AWS SDK; never another adapter |
 | Test helper | `internal/flocitest` | anything; imported only by `_test.go` files |
 | Composition | `cmd/*` | anything; wiring only, no logic |
 
-- `domain`, `rules`, and the modules never import `github.com/aws/...`.
+- `domain`, `rules`, `idempotency`, and the modules never import `github.com/aws/...`.
 - A module is a deep package named after a glossary concept (`batch`,
   `evaluate`). It exposes a `Module` built by `New` and methods named after
   what the caller wants done, and it declares the ports it needs.
@@ -71,9 +72,12 @@ commit and says why.
 
 ## 5. Persistence and queues
 
-- Writes that decide a batch item are idempotent: keys are deterministic
-  (`ITEM#<index>`, never a random id), and state transitions are conditional
-  writes on the current status.
+- Writes that decide a batch item are idempotent: each item keeps its stable
+  `item_id` (`ITEM#<item_id>`, a version 7 UUID fixed at submit), and state
+  transitions are conditional writes on the current status and attempt.
+- A client retry of a `POST` is made safe by the `Idempotency-Key` (ADR 0005):
+  the key is claimed with one conditional `PutItem`, never a read then a
+  write.
 - Counters are derived from the items on read, never stored, so a transition
   writes only its own item.
 - The sync path fails closed (ADR 0001): no stored decision, no decision
@@ -85,7 +89,8 @@ commit and says why.
 
 - A full CPF or a customer name never appears in a log line, a metric
   dimension, an error message, or an API response. Outputs use the masked CPF.
-- Full CPF and name live only in DynamoDB and SQS messages.
+- Full CPF and name live only in DynamoDB and its stream. Queue messages
+  carry item events with no customer data (ADR 0004).
 - Every route except `/health` sits behind the IAM authorizer.
 - No secrets in code or in `cdk.json`; configuration comes from environment
   variables set by the stack.
