@@ -1,0 +1,23 @@
+info:
+  name: 'Invalid status: 400'
+  type: http
+  seq: 9
+http:
+  method: GET
+  url: '{{baseUrl}}/batches/{{batchId}}/items?status=BOGUS'
+  auth: inherit
+  params:
+  - name: status
+    value: BOGUS
+    type: query
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '400'
+  scripts:
+  - type: tests
+    code: |-
+      test("Invalid status: 400", function () {
+        expect(res.body.error).to.equal("invalid_status");
+      });

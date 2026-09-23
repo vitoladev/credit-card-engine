@@ -1,0 +1,35 @@
+info:
+  name: 'Denied: more than 2 late payments (Diego)'
+  type: http
+  seq: 4
+http:
+  method: POST
+  url: '{{baseUrl}}/evaluations'
+  auth: inherit
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Diego",
+        "cpf": "111.222.333-96",
+        "credit_score": 810,
+        "current_invoice_cents": 50000,
+        "credit_limit_cents": 1200000,
+        "late_payments": 3,
+        "monthly_spend_cents": [
+          200000,
+          180000,
+          190000
+        ]
+      }
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '200'
+  scripts:
+  - type: tests
+    code: |-
+      test("Denied: more than 2 late payments (Diego)", function () {
+        expect(res.body.reasons[0]).to.equal("late_payments_above_2");
+      });

@@ -1,0 +1,16 @@
+opencollection: 1.0.0
+info:
+  name: Credit Card Engine
+  version: 1.0.0
+  summary: Every use case of the credit card engine's HTTP API, with sample customers.
+request:
+  headers:
+  - name: content-type
+    value: application/json
+  auth:
+    type: awsv4
+    accessKeyId: '{{awsAccessKeyId}}'
+    secretAccessKey: '{{awsSecretAccessKey}}'
+    sessionToken: '{{awsSessionToken}}'
+    service: execute-api
+    region: '{{awsRegion}}'

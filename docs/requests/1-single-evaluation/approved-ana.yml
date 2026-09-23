@@ -1,0 +1,40 @@
+info:
+  name: 'Approved: Ana'
+  type: http
+  seq: 1
+http:
+  method: POST
+  url: '{{baseUrl}}/evaluations'
+  auth: inherit
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Ana",
+        "cpf": "390.533.447-05",
+        "credit_score": 780,
+        "current_invoice_cents": 50000,
+        "credit_limit_cents": 500000,
+        "late_payments": 0,
+        "monthly_spend_cents": [
+          80000,
+          90000,
+          70000
+        ]
+      }
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '200'
+  scripts:
+  - type: tests
+    code: |-
+      test("Approved: Ana", function () {
+        expect(res.body.decision).to.equal("APPROVED");
+        expect(res.body.cpf_masked).to.equal("***05");
+      });
+  - type: after-response
+    code: bru.setVar("decisionId", res.body.decision_id);
+docs: 'Score 780, invoice under the limit, spend under 90%: approved with 50% of the limit, capped at
+  limit minus invoice (R$ 2.500,00).'

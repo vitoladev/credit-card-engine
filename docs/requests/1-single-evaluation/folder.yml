@@ -1,0 +1,6 @@
+info:
+  name: 1. Single evaluation
+  type: folder
+  seq: 2
+docs: 'POST /evaluations evaluates one customer synchronously and records the decision before it answers.
+  One request per outcome: approved, and each reason a rule denies with.'

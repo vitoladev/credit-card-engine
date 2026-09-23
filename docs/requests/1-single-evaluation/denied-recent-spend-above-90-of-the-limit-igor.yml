@@ -1,0 +1,35 @@
+info:
+  name: 'Denied: recent spend above 90% of the limit (Igor)'
+  type: http
+  seq: 7
+http:
+  method: POST
+  url: '{{baseUrl}}/evaluations'
+  auth: inherit
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Igor",
+        "cpf": "555.666.777-20",
+        "credit_score": 710,
+        "current_invoice_cents": 10000,
+        "credit_limit_cents": 100000,
+        "late_payments": 0,
+        "monthly_spend_cents": [
+          95000,
+          96000,
+          97000
+        ]
+      }
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '200'
+  scripts:
+  - type: tests
+    code: |-
+      test("Denied: recent spend above 90% of the limit (Igor)", function () {
+        expect(res.body.reasons[0]).to.equal("recent_spend_above_share");
+      });

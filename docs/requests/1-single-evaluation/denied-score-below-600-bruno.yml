@@ -1,0 +1,34 @@
+info:
+  name: 'Denied: score below 600 (Bruno)'
+  type: http
+  seq: 3
+http:
+  method: POST
+  url: '{{baseUrl}}/evaluations'
+  auth: inherit
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Bruno",
+        "cpf": "123.456.789-09",
+        "credit_score": 520,
+        "current_invoice_cents": 200000,
+        "credit_limit_cents": 400000,
+        "late_payments": 0,
+        "monthly_spend_cents": [
+          80000
+        ]
+      }
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '200'
+  scripts:
+  - type: tests
+    code: |-
+      test("Denied: score below 600 (Bruno)", function () {
+        expect(res.body.decision).to.equal("DENIED");
+        expect(res.body.reasons[0]).to.equal("score_below_600");
+      });

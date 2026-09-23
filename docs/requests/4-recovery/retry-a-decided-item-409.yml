@@ -1,0 +1,20 @@
+info:
+  name: 'Retry a decided item: 409'
+  type: http
+  seq: 1
+http:
+  method: POST
+  url: '{{baseUrl}}/batches/{{batchId}}/items/{{itemId}}/retry'
+  auth: inherit
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '409'
+  scripts:
+  - type: tests
+    code: |-
+      test("Retry a decided item: 409", function () {
+        expect(res.body.error).to.equal("invalid_transition");
+      });
+docs: On a FAILED item this returns 202 {attempts, item_id}.

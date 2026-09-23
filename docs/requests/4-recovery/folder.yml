@@ -1,0 +1,7 @@
+info:
+  name: 4. Recovery
+  type: folder
+  seq: 5
+docs: An operator retries or cancels a FAILED item. An item fails only after 5 deliveries reach the DLQ,
+  so on a healthy stack these return 409 for a decided item and 0 requeued. Run "3. Batch / Submit a batch"
+  first.

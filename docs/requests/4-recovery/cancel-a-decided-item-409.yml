@@ -1,0 +1,14 @@
+info:
+  name: 'Cancel a decided item: 409'
+  type: http
+  seq: 2
+http:
+  method: POST
+  url: '{{baseUrl}}/batches/{{batchId}}/items/{{itemId}}/cancel'
+  auth: inherit
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '409'
+docs: 'On a FAILED item this returns 200 {item_id, status: CANCELLED}, and again 200 on a second call.'

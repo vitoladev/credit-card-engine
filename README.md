@@ -29,6 +29,10 @@ Compose starts Floci.
 
 ### Call the API
 
+To send every use case from an HTTP client, open `docs/requests` in Bruno.
+It is an OpenCollection with sample customers; see
+[docs/requests/README.md](docs/requests/README.md).
+
 ```bash
 BASE="$(make -s api-url)"
 curl -s "$BASE/health"
@@ -192,6 +196,7 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 |---|---|
 | `make test` | `turbo run test` for the engine, the Lambdas, and the stack. Then reaps Floci Lambda containers this stack left behind. |
 | `make loadtest` | k6 against `POST /evaluations/batch` on a local deploy. `LOADTEST_PATH=single` targets `POST /evaluations` instead. `LOADTEST_BATCH_CUSTOMERS=3-5` sends 3 to 5 customers per batch, at random. |
+| `make requests` | Runs the HTTP collection in `docs/requests` (OpenCollection, for Bruno) against the local stack. |
 | `make local-bootstrap` | CDK bootstrap on Floci account `000000000000`. |
 | `make local-deploy` | `cdklocal deploy`. Works once per stack on Floci. |
 | `make local-redeploy` | `local-destroy` then `local-deploy`. Use it to deploy a change: Floci cannot update the relay's stream event source mapping in place. The tables start empty. |
@@ -230,6 +235,6 @@ Floci differs from AWS in ways that change what a local run shows:
 apps/engine/          The evaluate, batch, and idempotency modules, the rules, and the http, relay, worker, and dlq commands
 packages/infra-iac/   CDK in Go
 packages/loadtest/    k6 load test for both evaluation routes
-docs/                 architecture.md, loadtest.md, CODING_STANDARDS.md, and the ADRs in adr/
+docs/                 architecture.md, loadtest.md, CODING_STANDARDS.md, the ADRs in adr/, and the HTTP collection in requests/
 CONTEXT.md            The glossary: the name of each domain concept
 ```

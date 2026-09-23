@@ -1,0 +1,31 @@
+info:
+  name: 'Denied: no spend history (Helena)'
+  type: http
+  seq: 6
+http:
+  method: POST
+  url: '{{baseUrl}}/evaluations'
+  auth: inherit
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Helena",
+        "cpf": "444.555.666-19",
+        "credit_score": 740,
+        "current_invoice_cents": 10000,
+        "credit_limit_cents": 300000,
+        "late_payments": 0,
+        "monthly_spend_cents": []
+      }
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '200'
+  scripts:
+  - type: tests
+    code: |-
+      test("Denied: no spend history (Helena)", function () {
+        expect(res.body.reasons[0]).to.equal("insufficient_spend_history");
+      });
