@@ -94,7 +94,7 @@ queue message.
 _Avoid_: Job
 
 **Item event**:
-One status change of a batch item, read from the table's stream: batch, item,
+One status change of a batch item, read from the `BatchItems` stream: batch, item,
 attempt, and status, with no customer data. The events that queue an item are
 the queue's messages.
 _Avoid_: Job, command

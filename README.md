@@ -194,7 +194,7 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 | `make loadtest` | k6 against `POST /evaluations/batch` on a local deploy. `LOADTEST_PATH=single` targets `POST /evaluations` instead. `LOADTEST_BATCH_CUSTOMERS=3-5` sends 3 to 5 customers per batch, at random. |
 | `make local-bootstrap` | CDK bootstrap on Floci account `000000000000`. |
 | `make local-deploy` | `cdklocal deploy`. Works once per stack on Floci. |
-| `make local-redeploy` | `local-destroy` then `local-deploy`. Use it to deploy a change: Floci cannot update the relay's stream event source mapping in place. The table starts empty. |
+| `make local-redeploy` | `local-destroy` then `local-deploy`. Use it to deploy a change: Floci cannot update the relay's stream event source mapping in place. The tables start empty. |
 | `make api-url` | Prints the HTTP API base URL on the emulator. |
 | `make synth` | `cdk synth` (template, no deploy). |
 | `make floci-up` and `make floci-down` | Only the `floci` service from `.devcontainer/docker-compose.yml`. No-op inside the Dev Container. |
@@ -212,12 +212,12 @@ Floci differs from AWS in ways that change what a local run shows:
 - Floci serves about 10 Lambda invocations a second in total, so a local
   `make loadtest` reaches about 10 req/s whatever `LOADTEST_RATE` asks for.
 - Its CloudFormation ignores point-in-time recovery, the SQS batching window,
-  and the table's TTL, and it stubs log metric filters. The CDK tests assert
-  all four in the template. Expired idempotency keys stay in the table on
+  and the `IdempotencyKeys` TTL, and it stubs log metric filters. The CDK tests assert
+  all four in the template. Expired idempotency keys stay in their table on
   Floci, but the claim's condition treats them as absent, so keys still
   expire after 24 hours.
 - A failed update can leave an API, functions, event source mappings, and a
-  table behind. `make api-url` asks the stack for its own API, so it never
+  tables behind. `make api-url` asks the stack for its own API, so it never
   picks a leftover one.
 
 ## Layout

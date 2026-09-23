@@ -73,11 +73,17 @@ commit and says why.
 ## 5. Persistence and queues
 
 - Writes that decide a batch item are idempotent: each item keeps its stable
-  `item_id` (`ITEM#<item_id>`, a version 7 UUID fixed at submit), and state
+  `item_id` (a version 7 UUID fixed at submit), and state
   transitions are conditional writes on the current status and attempt.
 - A client retry of a `POST` is made safe by the `Idempotency-Key` (ADR 0005):
   the key is claimed with one conditional `PutItem`, never a read then a
   write.
+- Each port has its own table, keyed by its own IDs
+  ([ADR 0006](adr/0006-one-table-per-port.md)). A new entity gets a new table.
+- A `Query` never filters out most of what it reads: DynamoDB bills every item
+  read. Read the items you need through a key or an index
+  ([ADR 0007](adr/0007-list-items-by-status-from-an-index.md)). There is no
+  `Scan` outside tests.
 - Counters are derived from the items on read, never stored, so a transition
   writes only its own item.
 - The sync path fails closed (ADR 0001): no stored decision, no decision
