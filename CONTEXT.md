@@ -62,14 +62,20 @@ A list of customers submitted together for asynchronous evaluation. It is
 accepted whole or rejected whole.
 
 **Report**:
-The aggregated view of one batch: approved and denied customers and the total
-revolving amount. A report has no identity of its own; it belongs to its batch.
+The list of a batch's items, read page by page: each item with its status and
+revolving amount. It has no totals and no batch-level status. A report has no
+identity of its own; it belongs to its batch.
 _Avoid_: Snapshot
 
 **Batch item**:
-One customer inside a batch, identified by its position. It ends with a
+One customer inside a batch, identified by its item ID. It ends with a
 decision, or it fails and waits for an operator.
 _Avoid_: Job, message
+
+**Item ID**:
+The ID of a batch item, a version 7 UUID given at submit. Item IDs sort in the
+order the customers were submitted.
+_Avoid_: Index, position
 
 **Failed item**:
 A batch item whose evaluation could not complete after automatic retries. It
@@ -77,18 +83,27 @@ has no decision. An operator retries it or cancels it.
 _Avoid_: Failed decision
 
 **Item status**:
-Where a batch item stands: queued, decided, failed or cancelled. Only a failed
-item can be retried or cancelled.
+Where a batch item stands: queued, approved, denied, failed, or cancelled. A
+decided item carries its decision as its status. Only a failed item can be
+retried or cancelled.
 
 **Attempt**:
 One pass of a batch item through evaluation, the first one or an operator
-retry. A batch item gets at most 5 attempts.
+retry. A batch item gets at most 5 attempts. Each attempt travels as one
+queue message.
+_Avoid_: Job
 
-**Batch status**:
-Derived from its items: processing while any item is queued, needs attention
-when none is queued and some item failed, completed when every item is decided
-or cancelled.
-_Avoid_: Failed batch, cancelled batch
+**Item event**:
+One status change of a batch item, read from the table's stream: batch, item,
+attempt, and status, with no customer data. The events that queue an item are
+the queue's messages.
+_Avoid_: Job, command
+
+**Idempotency key**:
+A key the client sends with an evaluation request (`Idempotency-Key`) so a
+retry of the same request gets the first response instead of running again.
+It lives 24 hours.
+_Avoid_: Request ID, dedup key
 
 **Invalid customer**:
 A customer whose data fails validation (for example a CPF with wrong check

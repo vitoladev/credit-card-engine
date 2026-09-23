@@ -12,13 +12,16 @@ const (
 	queueID          = "EvaluationJobs"
 	dlqID            = "EvaluationJobsDLQ"
 	dlqFunctionID    = "DlqConsumer"
+	relayFunctionID  = "Relay"
 	apiID            = "Api"
 	tableID          = "Decisions"
 	alarmID          = "EvaluateAlarms"
 
-	// Generic keys: one table holds DECISION#, BATCH# META and ITEM# rows.
+	// Generic keys: one table holds DECISION#, BATCH# item, and IDEMPOTENCY# rows.
+	// Its stream (NEW_IMAGE) feeds the relay, the outbox of ADR 0004.
 	tablePartitionKey = "pk"
 	tableSortKey      = "sk"
+	tableTTLAttribute = "expires_at"
 
 	// Loadtest: 100 req/s by default on Floci; the 1000 req/s NFR run is
 	// LOADTEST_RATE=1000 make loadtest against a real AWS stack.
@@ -32,10 +35,31 @@ const (
 	maxBatchSize     = 1000
 
 	// A record that fails this many receives moves to the DLQ (ADR 0001).
-	maxReceiveCount  = 3
+	// AWS recommends at least 5 for a Lambda source, so a short outage does
+	// not fail an item.
+	maxReceiveCount  = 5
 	dlqRetentionDays = 14
 	sqsBatchSize     = 10
+	// The worker takes up to 50 messages per invocation and handles them
+	// concurrently. SQS allows a batch over 10 only with a batching window,
+	// which adds up to 1 s when traffic is low.
+	workerBatchSize      = 50
+	workerBatchingWindow = 1
+	// The relay reads the table stream in batches of this size. A record
+	// that keeps failing is retried until it expires (24 h); the IteratorAge
+	// alarm fires long before that.
+	streamBatchSize = 100
+	// The relay waits up to this long to fill a batch: near real time, and
+	// fewer invocations when traffic is low.
+	relayBatchingWindow = 1
+	iteratorAgeAlarmMs  = 60_000
+	// The batch SLO the ItemEndToEnd alarm guards, and the queue backlog that
+	// breaks it first.
+	itemEndToEndAlarmMs = 5_000
+	queueAgeAlarmS      = 60
 
+	// lambdaTimeoutS must stay under idempotency.Lease (10 s, ADR 0005), or a
+	// retry could take a key while the first request still runs.
 	lambdaTimeoutS = 3
 	lambdaMemoryMB = 256
 	latencyAlarmMs = 800
@@ -45,6 +69,7 @@ const (
 	flociEvaluateConcurrency = 8
 	flociWorkerConcurrency   = 4
 	flociDlqConcurrency      = 2
+	flociRelayConcurrency    = 2
 
 	metricsNamespace = "CreditCardEngine"
 	dashboardName    = "CreditCardEngine"
@@ -64,14 +89,7 @@ func repoRoot() string {
 	return filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
 }
 
-func lambdaEntry() string {
-	return filepath.Join(repoRoot(), "apps", "engine", "cmd", "http")
-}
-
-func workerEntry() string {
-	return filepath.Join(repoRoot(), "apps", "engine", "cmd", "worker")
-}
-
-func dlqEntry() string {
-	return filepath.Join(repoRoot(), "apps", "engine", "cmd", "dlq")
+// cmdEntry is the Go main package of one engine binary.
+func cmdEntry(cmd string) string {
+	return filepath.Join(repoRoot(), "apps", "engine", "cmd", cmd)
 }

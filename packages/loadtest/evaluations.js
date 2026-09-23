@@ -14,6 +14,15 @@ if (!Number.isInteger(rate) || rate <= 0) {
   throw new Error(`LOADTEST_RATE must be a positive integer, got "${__ENV.LOADTEST_RATE}"`);
 }
 
+// LOADTEST_PATH picks the route: "batch" posts the 10 customers below to
+// POST /evaluations/batch, "single" posts one of them per request to
+// POST /evaluations (the sync path, 1 s SLO).
+const path = __ENV.LOADTEST_PATH || "batch";
+if (path !== "batch" && path !== "single") {
+  throw new Error(`LOADTEST_PATH must be batch or single, got "${__ENV.LOADTEST_PATH}"`);
+}
+const duration = __ENV.LOADTEST_DURATION || "10s";
+
 const customers = [
   { name: "Ana", cpf: "39053344705", credit_score: 780, current_invoice_cents: 50000, credit_limit_cents: 500000, late_payments: 0, monthly_spend_cents: [80000, 90000, 70000] },
   { name: "Eva", cpf: "22233344405", credit_score: 820, current_invoice_cents: 100000, credit_limit_cents: 1000000, late_payments: 0, monthly_spend_cents: [100000, 110000, 90000] },
@@ -26,7 +35,11 @@ const customers = [
   { name: "Joana", cpf: "66677788830", credit_score: 750, current_invoice_cents: 0, credit_limit_cents: 0, late_payments: 0, monthly_spend_cents: [10000] },
   { name: "Kai", cpf: "77788899941", credit_score: 800, current_invoice_cents: 20000, credit_limit_cents: 600000, late_payments: 0, monthly_spend_cents: [80000, 70000, 75000] },
 ];
-const batch = JSON.stringify(customers);
+// LOADTEST_BATCH_CUSTOMERS sets how many customers each batch carries: a
+// number, or a range "min-max" drawn at random per request (for example 3-5).
+// The default is all 10 customers above.
+const [batchMin, batchMax] = parseRange(__ENV.LOADTEST_BATCH_CUSTOMERS || String(customers.length));
+const singles = customers.map((c) => JSON.stringify(c));
 
 const { protocol, host, pathPrefix } = splitBase(base);
 const signer = new SignatureV4({
@@ -53,7 +66,7 @@ export const options = {
       executor: "constant-arrival-rate",
       rate,
       timeUnit: "1s",
-      duration: "10s",
+      duration,
       preAllocatedVUs,
       maxVUs,
     },
@@ -71,19 +84,43 @@ export const options = {
 };
 
 export default function () {
+  if (path === "single") {
+    const res = post("/evaluations", singles[__ITER % singles.length]);
+    check(res, {
+      "status 200": (r) => r.status === 200,
+      decision_id: (r) => Boolean(r.json("decision_id")),
+    });
+    return;
+  }
+  const size = batchMin + Math.floor(Math.random() * (batchMax - batchMin + 1));
+  const picked = Array.from({ length: size }, () => customers[Math.floor(Math.random() * customers.length)]);
+  const res = post("/evaluations/batch", JSON.stringify(picked));
+  check(res, {
+    "status 202": (r) => r.status === 202,
+    queued: (r) => r.json("queued") === size,
+    batch_id: (r) => Boolean(r.json("batch_id")),
+  });
+}
+
+function post(route, body) {
   const signed = signer.sign({
     method: "POST",
     endpoint: new Endpoint(`${protocol}://${host}`),
-    path: `${pathPrefix}/evaluations/batch`,
+    path: `${pathPrefix}${route}`,
     headers: { "content-type": "application/json" },
-    body: batch,
+    body,
   });
-  const res = http.post(signed.url, signed.body, { headers: signed.headers });
-  check(res, {
-    "status 202": (r) => r.status === 202,
-    queued: (r) => r.json("queued") === customers.length,
-    batch_id: (r) => Boolean(r.json("batch_id")),
-  });
+  return http.post(signed.url, signed.body, { headers: signed.headers });
+}
+
+function parseRange(raw) {
+  const m = /^(\d+)(?:-(\d+))?$/.exec(raw.trim());
+  const lo = m ? Number(m[1]) : NaN;
+  const hi = m && m[2] ? Number(m[2]) : lo;
+  if (!(lo >= 1 && hi >= lo)) {
+    throw new Error(`LOADTEST_BATCH_CUSTOMERS must be N or MIN-MAX with 1 <= MIN <= MAX, got "${raw}"`);
+  }
+  return [lo, hi];
 }
 
 function splitBase(raw) {

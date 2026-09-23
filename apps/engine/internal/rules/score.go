@@ -6,16 +6,9 @@ import (
 	"engine/internal/domain"
 )
 
-type MinScore struct {
-	link
-	Min int
-}
-
-func (r *MinScore) Name() string { return "min_score" }
-
-func (r *MinScore) Handle(c domain.Customer) (bool, string) {
-	if c.CreditScore < r.Min {
-		return false, fmt.Sprintf("score_below_%d", r.Min)
+func MinScore(minScore int) Rule {
+	reason := fmt.Sprintf("score_below_%d", minScore)
+	return func(c domain.Customer) (string, bool) {
+		return reason, c.CreditScore < minScore
 	}
-	return r.forward(c)
 }

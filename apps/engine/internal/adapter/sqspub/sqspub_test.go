@@ -2,11 +2,11 @@ package sqspub_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"os"
 	"slices"
+	"strings"
 	"testing"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -16,84 +16,80 @@ import (
 	"github.com/aws/smithy-go/middleware"
 
 	"engine/internal/adapter/sqspub"
-	"engine/internal/domain"
-	"engine/internal/queue"
+	"engine/internal/batch"
+	"engine/internal/flocitest"
 )
 
-// These tests need an SQS endpoint (Floci), e.g.
-// AWS_TEST_ENDPOINT=http://localhost:4566 go test ./internal/adapter/sqspub/
-func awsConfig(t *testing.T) aws.Config {
-	t.Helper()
-	endpoint := os.Getenv("AWS_TEST_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("AWS_TEST_ENDPOINT not set")
-	}
-	cfg, err := config.LoadDefaultConfig(t.Context(),
-		config.WithRegion("us-east-1"),
-		config.WithBaseEndpoint(endpoint),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return cfg
-}
-
-func jobs(n int) []queue.Job {
-	out := make([]queue.Job, n)
+func attempts(n int) []batch.ItemEvent {
+	out := make([]batch.ItemEvent, n)
 	for i := range out {
-		out[i] = queue.Job{BatchID: "b1", Index: i, Attempt: 1, Customer: domain.Customer{Name: "Ana", CPF: "39053344705"}}
+		out[i] = batch.NewItemEvent("b1", uuid.NewV7().String(), 1, batch.Queued)
 	}
 	return out
 }
 
-func TestPublishSendsEveryJob(t *testing.T) {
-	cfg := awsConfig(t)
-	client := sqs.NewFromConfig(cfg)
-	created, err := client.CreateQueue(t.Context(), &sqs.CreateQueueInput{QueueName: aws.String("sqspub-test-" + t.Name())})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = client.DeleteQueue(context.Background(), &sqs.DeleteQueueInput{QueueUrl: created.QueueUrl})
-	})
-
-	failed, err := sqspub.New(cfg, aws.ToString(created.QueueUrl)).Publish(t.Context(), jobs(25))
+func TestPublishSendsEveryAttempt(t *testing.T) {
+	cfg, _ := flocitest.Config(t)
+	url := flocitest.Queue(t, cfg)
+	sent := attempts(25)
+	failed, err := sqspub.New(cfg, url).Publish(t.Context(), sent)
 	if err != nil || len(failed) != 0 {
 		t.Fatalf("failed=%v err=%v", failed, err)
 	}
 
-	var got []int
-	for len(got) < 25 {
-		out, err := client.ReceiveMessage(t.Context(), &sqs.ReceiveMessageInput{QueueUrl: created.QueueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 1})
-		if err != nil {
-			t.Fatal(err)
+	var got []string
+	for _, a := range flocitest.Decode[batch.ItemEvent](t, flocitest.Receive(t, cfg, url)) {
+		if a.BatchID != "b1" || a.Attempt != 1 || a.Status != batch.Queued || a.ID == "" {
+			t.Fatalf("%+v", a)
 		}
-		if len(out.Messages) == 0 {
-			break
-		}
-		for _, m := range out.Messages {
-			var j queue.Job
-			if err := json.Unmarshal([]byte(aws.ToString(m.Body)), &j); err != nil {
-				t.Fatal(err)
-			}
-			if j.BatchID != "b1" || j.Attempt != 1 {
-				t.Fatalf("%+v", j)
-			}
-			got = append(got, j.Index)
-		}
+		got = append(got, a.ItemID)
 	}
 	slices.Sort(got)
-	if len(got) != 25 || got[0] != 0 || got[24] != 24 {
+	if !slices.Equal(got, itemIDs(sent)) {
 		t.Fatalf("received %v", got)
 	}
 }
 
-func TestPublishReturnsEveryFailedIndex(t *testing.T) {
-	cfg := awsConfig(t)
-	failed, err := sqspub.New(cfg, os.Getenv("AWS_TEST_ENDPOINT")+"/000000000000/missing-queue").Publish(t.Context(), jobs(25))
-	if err == nil || len(failed) != 25 || failed[0] != 0 || failed[24] != 24 {
+func itemIDs(itemEvents []batch.ItemEvent) []string {
+	out := make([]string, len(itemEvents))
+	for i, e := range itemEvents {
+		out[i] = e.ItemID
+	}
+	return out
+}
+
+func eventIDs(itemEvents []batch.ItemEvent) []string {
+	out := make([]string, len(itemEvents))
+	for i, e := range itemEvents {
+		out[i] = e.ID
+	}
+	return out
+}
+
+func TestPublishReturnsEveryFailedItem(t *testing.T) {
+	cfg, _ := flocitest.Config(t)
+	url := flocitest.Queue(t, cfg)
+	missing := url[:strings.LastIndex(url, "/")] + "/missing-queue"
+	sent := attempts(25)
+	failed, err := sqspub.New(cfg, missing).Publish(t.Context(), sent)
+	slices.Sort(failed)
+	if err == nil || !slices.Equal(failed, eventIDs(sent)) {
 		t.Fatalf("failed=%v err=%v", failed, err)
+	}
+}
+
+func TestPublishReturnsTheEntriesSQSRejected(t *testing.T) {
+	cfg, faults := flocitest.Config(t)
+	url := flocitest.Queue(t, cfg)
+	faults.DropEntries(2)
+	sent := attempts(3)
+	failed, err := sqspub.New(cfg, url).Publish(t.Context(), sent)
+	slices.Sort(failed)
+	if err == nil || !slices.Equal(failed, eventIDs(sent[:2])) {
+		t.Fatalf("failed=%v err=%v", failed, err)
+	}
+	if got := flocitest.Decode[batch.ItemEvent](t, flocitest.Receive(t, cfg, url)); len(got) != 1 || got[0].ItemID != sent[2].ItemID {
+		t.Fatalf("received %+v", got)
 	}
 }
 
@@ -101,7 +97,7 @@ const lambdaTraceHeader = "Root=1-5759e988-bd862e3fe1be46a994272793;Parent=53995
 
 func TestPublishAttachesTheLambdaTraceHeader(t *testing.T) {
 	t.Setenv("_X_AMZN_TRACE_ID", lambdaTraceHeader)
-	in := capturedBatch(t, jobs(1))
+	in := capturedBatch(t, attempts(1))
 	got := in.Entries[0].MessageSystemAttributes[string(types.MessageSystemAttributeNameForSendsAWSTraceHeader)]
 	if aws.ToString(got.DataType) != "String" || aws.ToString(got.StringValue) != lambdaTraceHeader {
 		t.Fatalf("%+v", in.Entries[0].MessageSystemAttributes)
@@ -110,7 +106,7 @@ func TestPublishAttachesTheLambdaTraceHeader(t *testing.T) {
 
 func TestPublishOmitsTheTraceHeaderWithoutATrace(t *testing.T) {
 	t.Setenv("_X_AMZN_TRACE_ID", "")
-	in := capturedBatch(t, jobs(1))
+	in := capturedBatch(t, attempts(1))
 	if in.Entries[0].MessageSystemAttributes != nil {
 		t.Fatalf("%+v", in.Entries[0].MessageSystemAttributes)
 	}
@@ -118,37 +114,24 @@ func TestPublishOmitsTheTraceHeaderWithoutATrace(t *testing.T) {
 
 func TestPublishDeliversTheTraceHeaderOnTheMessage(t *testing.T) {
 	t.Setenv("_X_AMZN_TRACE_ID", lambdaTraceHeader)
-	cfg := awsConfig(t)
-	client := sqs.NewFromConfig(cfg)
-	created, err := client.CreateQueue(t.Context(), &sqs.CreateQueueInput{QueueName: aws.String("sqspub-trace-" + t.Name())})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = client.DeleteQueue(context.Background(), &sqs.DeleteQueueInput{QueueUrl: created.QueueUrl})
-	})
-	failed, err := sqspub.New(cfg, aws.ToString(created.QueueUrl)).Publish(t.Context(), jobs(1))
+	cfg, _ := flocitest.Config(t)
+	url := flocitest.Queue(t, cfg)
+	failed, err := sqspub.New(cfg, url).Publish(t.Context(), attempts(1))
 	if err != nil || len(failed) != 0 {
 		t.Fatalf("failed=%v err=%v", failed, err)
 	}
-	out, err := client.ReceiveMessage(t.Context(), &sqs.ReceiveMessageInput{
-		QueueUrl:                    created.QueueUrl,
-		MaxNumberOfMessages:         1,
-		WaitTimeSeconds:             2,
-		MessageSystemAttributeNames: []types.MessageSystemAttributeName{types.MessageSystemAttributeNameAWSTraceHeader},
-	})
-	if err != nil {
-		t.Fatal(err)
+	msgs := flocitest.Receive(t, cfg, url)
+	if len(msgs) != 1 {
+		t.Fatalf("messages=%d", len(msgs))
 	}
-	if len(out.Messages) != 1 {
-		t.Fatalf("messages=%d", len(out.Messages))
-	}
-	if got := out.Messages[0].Attributes[string(types.MessageSystemAttributeNameAWSTraceHeader)]; got != lambdaTraceHeader {
-		t.Fatalf("AWSTraceHeader=%q attributes=%v", got, out.Messages[0].Attributes)
+	if got := msgs[0].Attributes[string(types.MessageSystemAttributeNameAWSTraceHeader)]; got != lambdaTraceHeader {
+		t.Fatalf("AWSTraceHeader=%q attributes=%v", got, msgs[0].Attributes)
 	}
 }
 
-func capturedBatch(t *testing.T, jobs []queue.Job) *sqs.SendMessageBatchInput {
+// capturedBatch returns the SendMessageBatch request Publish builds, without
+// sending it.
+func capturedBatch(t *testing.T, attempts []batch.ItemEvent) *sqs.SendMessageBatchInput {
 	t.Helper()
 	var got *sqs.SendMessageBatchInput
 	cfg, err := config.LoadDefaultConfig(t.Context(),
@@ -167,8 +150,8 @@ func capturedBatch(t *testing.T, jobs []queue.Job) *sqs.SendMessageBatchInput {
 			return middleware.InitializeOutput{}, middleware.Metadata{}, errors.New("stop")
 		}), middleware.After)
 	})
-	_, _ = sqspub.New(cfg, "http://127.0.0.1:1/queue").Publish(t.Context(), jobs)
-	if got == nil || len(got.Entries) != len(jobs) {
+	_, _ = sqspub.New(cfg, "http://127.0.0.1:1/queue").Publish(t.Context(), attempts)
+	if got == nil || len(got.Entries) != len(attempts) {
 		t.Fatalf("SendMessageBatch not captured: %+v", got)
 	}
 	return got

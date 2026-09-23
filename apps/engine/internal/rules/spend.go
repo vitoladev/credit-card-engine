@@ -2,29 +2,22 @@ package rules
 
 import "engine/internal/domain"
 
-type RecentSpend struct {
-	link
-	Months      int
-	MaxShareBPS int64
-}
-
-func (r *RecentSpend) Name() string { return "recent_spend" }
-
-func (r *RecentSpend) Handle(c domain.Customer) (bool, string) {
-	if c.CreditLimitCents <= 0 {
-		return false, "no_credit_limit"
+// RecentSpend denies when the average spend of the last months exceeds
+// maxShareBPS of the credit limit.
+func RecentSpend(months int, maxShareBPS int64) Rule {
+	return func(c domain.Customer) (string, bool) {
+		if c.CreditLimitCents <= 0 {
+			return "no_credit_limit", true
+		}
+		if len(c.MonthlySpendCents) == 0 {
+			return "insufficient_spend_history", true
+		}
+		n := min(months, len(c.MonthlySpendCents))
+		var sum int64
+		for _, v := range c.MonthlySpendCents[len(c.MonthlySpendCents)-n:] {
+			sum += v
+		}
+		avg := sum / int64(n)
+		return "recent_spend_above_share", avg*10000 > c.CreditLimitCents*maxShareBPS
 	}
-	if len(c.MonthlySpendCents) == 0 {
-		return false, "insufficient_spend_history"
-	}
-	n := min(r.Months, len(c.MonthlySpendCents))
-	var sum int64
-	for _, v := range c.MonthlySpendCents[len(c.MonthlySpendCents)-n:] {
-		sum += v
-	}
-	avg := sum / int64(n)
-	if avg*10000 > c.CreditLimitCents*r.MaxShareBPS {
-		return false, "recent_spend_above_share"
-	}
-	return r.forward(c)
 }

@@ -27,18 +27,22 @@ commit and says why.
 |---|---|---|
 | Domain | `internal/domain` | standard library only |
 | Policy | `internal/rules` | `domain` |
-| Ports | `internal/store`, `internal/queue` | `domain` |
-| Use cases | `internal/evaluate`, `submit`, `report`, `processjob`, and new ones | `domain`, `rules`, ports; never another use case except the one it orchestrates, never an adapter |
-| Adapters | `internal/adapter/*` | use cases, ports, `domain`, AWS SDK |
+| Modules | `internal/evaluate`, `internal/batch` | `domain`, `rules`; never each other, never an adapter |
+| Request guard | `internal/idempotency` | standard library only; imported by `adapter/httpapi` and implemented by `adapter/ddb` |
+| Adapters | `internal/adapter/*` | modules, `domain`, AWS SDK; never another adapter |
+| Test helper | `internal/flocitest` | anything; imported only by `_test.go` files |
 | Composition | `cmd/*` | anything; wiring only, no logic |
 
-- `domain`, `rules`, ports, and use cases never import `github.com/aws/...`.
-- One package per use case. A use case exposes `New(...) UseCase` and
-  `Execute(ctx, ...)`.
-- Ports are interfaces defined next to their in-memory implementation. The
-  in-memory implementation is the test double; do not add mocking libraries.
+- `domain`, `rules`, `idempotency`, and the modules never import `github.com/aws/...`.
+- A module is a deep package named after a glossary concept (`batch`,
+  `evaluate`). It exposes a `Module` built by `New` and methods named after
+  what the caller wants done, and it declares the ports it needs.
+- Ports are interfaces declared in the module that consumes them. An adapter
+  implements them even when it is the only implementation
+  ([ADR 0002](adr/0002-keep-aws-behind-adapters-with-one-implementation.md)).
+  There are no in-memory stores and no mocking libraries.
 - Adapters translate wire types (API Gateway, SQS events, DynamoDB items) into
-  domain types at the edge. Wire types never reach a use case.
+  domain types at the edge. Wire types never reach a module.
 
 ## 3. Domain and rules
 
@@ -46,20 +50,20 @@ commit and says why.
   floats in a decision path.
 - Domain code does no I/O, reads no clock or environment, and is deterministic
   for the same input.
-- A rule is one type in its own file, implements `rules.Handler`, holds its
-  cutoffs as fields, and returns a stable reason code
+- A rule is one constructor in its own file that takes its cutoffs and
+  returns a `rules.Rule`, which denies with a stable reason code
   (`snake_case`, e.g. `score_below_600`). Reason codes are part of the API
   contract: changing one is a breaking change.
-- The policy (rule order and amount policy) is assembled only in the rules
-  factory. Adding or changing a rule never edits a use case.
+- The policy (rule order and score bands) is assembled only in
+  `rules.NewPolicy()`. Adding or changing a rule never edits a module.
 - Validation lives in the domain and returns every violation as field + code.
-  It runs at the adapter edge before any use case is called.
+  It runs at the adapter edge before any module is called.
 
 ## 4. Errors
 
 - Wrap with `fmt.Errorf("...: %w", err)`; compare with `errors.Is` / `errors.As`.
 - Sentinel errors are named `ErrX`; error types are named `XError`.
-- Adapters map errors to HTTP status codes; use cases never know about HTTP.
+- Adapters map errors to HTTP status codes; modules never know about HTTP.
   `400` malformed input, `404` unknown id, `409` invalid transition, `422`
   invalid customer, `503` persistence failed.
 - A handler that returns a `5xx` status logs the cause once, at the adapter.
@@ -68,10 +72,14 @@ commit and says why.
 
 ## 5. Persistence and queues
 
-- Writes that decide a batch item are idempotent: keys are deterministic
-  (`ITEM#<index>`, never a random id), and state transitions are conditional
-  writes on the current status.
-- Counters and item transitions change in the same transaction.
+- Writes that decide a batch item are idempotent: each item keeps its stable
+  `item_id` (`ITEM#<item_id>`, a version 7 UUID fixed at submit), and state
+  transitions are conditional writes on the current status and attempt.
+- A client retry of a `POST` is made safe by the `Idempotency-Key` (ADR 0005):
+  the key is claimed with one conditional `PutItem`, never a read then a
+  write.
+- Counters are derived from the items on read, never stored, so a transition
+  writes only its own item.
 - The sync path fails closed (ADR 0001): no stored decision, no decision
   returned.
 - The worker reports partial batch failures; it never fails a whole SQS batch
@@ -79,9 +87,13 @@ commit and says why.
 
 ## 6. Security and privacy
 
-- A full CPF or a customer name never appears in a log line, a metric
-  dimension, an error message, or an API response. Outputs use the masked CPF.
-- Full CPF and name live only in DynamoDB and SQS messages.
+- A full CPF never appears in a log line, a metric dimension, an error
+  message, or an API response. Outputs use the masked CPF.
+- A customer name never appears in a log line, a metric dimension, or an
+  error message. API responses may carry it: a decision and a batch item name
+  the customer they are about, next to the masked CPF.
+- Full CPF and name live only in DynamoDB and its stream. Queue messages
+  carry item events with no customer data (ADR 0004).
 - Every route except `/health` sits behind the IAM authorizer.
 - No secrets in code or in `cdk.json`; configuration comes from environment
   variables set by the stack.
@@ -96,9 +108,14 @@ commit and says why.
 
 ## 8. Tests
 
-- Tests drive behavior through the highest seam: the Lambda handlers composed
-  over the in-memory queue and store. Assert on responses and stored outcomes,
-  not on private functions.
+- The module interface is the test surface. `batch` and `evaluate` tests run
+  the module over the real adapters on Floci (`internal/flocitest`), inject
+  failures with AWS SDK middleware, and assert on outcomes read back through
+  the module. Adapter tests cover only what the adapter adds: routing and
+  status mapping, partial batch responses, log redaction, conditional
+  updates. Assert on outcomes, not on private functions.
+- Tests that need Floci fail when no endpoint is set; they never skip. Run
+  them inside the Dev Container, where `AWS_ENDPOINT_URL` points at Floci.
 - Rule, validation, and amount logic use table tests with `t.Run` and named
   cases. Test packages are external (`package x_test`).
 - Use `t.Context()` for contexts in tests.

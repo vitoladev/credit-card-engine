@@ -1,37 +1,62 @@
+// Package evaluate is the single evaluation: apply the policy to one customer
+// and record the decision before returning it.
 package evaluate
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"time"
+	"uuid"
 
 	"engine/internal/domain"
 	"engine/internal/rules"
 )
 
-// UseCase decides; it stores nothing. The caller records the decision.
-type UseCase struct {
-	policy rules.Policy
+var (
+	ErrNotFound = errors.New("not found")
+	// ErrNotRecorded means the decision was not stored, so it is not returned
+	// (ADR 0001).
+	ErrNotRecorded = errors.New("decision not recorded")
+)
+
+// DecisionStore keeps single evaluations. The customer input is stored as the
+// audit record; only the result is read back.
+type DecisionStore interface {
+	Save(ctx context.Context, decisionID string, c domain.Customer, r domain.Result) error
+	// Get returns ErrNotFound for an unknown decision.
+	Get(ctx context.Context, decisionID string) (domain.Result, error)
 }
 
-func New(policy rules.Policy) UseCase {
-	if policy.Chain == nil || policy.Amount == nil {
-		policy = rules.NewPolicy()
-	}
-	return UseCase{policy: policy}
+// Emitter records a recorded decision as a metric.
+type Emitter interface {
+	Evaluated(decisionID string, r domain.Result, latency time.Duration)
 }
 
-func (u UseCase) Execute(_ context.Context, c domain.Customer) domain.Result {
-	out := domain.Result{
-		Name:      c.Name,
-		CPFMasked: domain.MaskCPF(c.CPF),
-		Decision:  domain.Approved,
+type Module struct {
+	policy    rules.Policy
+	decisions DecisionStore
+	emit      Emitter
+}
+
+func New(policy rules.Policy, decisions DecisionStore, emit Emitter) Module {
+	return Module{policy: policy, decisions: decisions, emit: emit}
+}
+
+// Evaluate decides for one customer and records the decision. It fails closed:
+// a decision that was not recorded is never returned.
+func (m Module) Evaluate(ctx context.Context, c domain.Customer) (string, domain.Result, error) {
+	start := time.Now()
+	r := m.policy.Evaluate(c)
+	id := uuid.New().String()
+	if err := m.decisions.Save(ctx, id, c, r); err != nil {
+		return "", domain.Result{}, fmt.Errorf("%w: %w", ErrNotRecorded, err)
 	}
-	ok, reason := u.policy.Chain.Handle(c)
-	if !ok {
-		out.Decision = domain.Denied
-		out.Reasons = []string{reason}
-		return out
-	}
-	out.RevolvingAmountCents = u.policy.Amount.Amount(c)
-	out.Reasons = []string{"eligible"}
-	return out
+	m.emit.Evaluated(id, r, time.Since(start))
+	return id, r, nil
+}
+
+// Get returns a recorded decision.
+func (m Module) Get(ctx context.Context, decisionID string) (domain.Result, error) {
+	return m.decisions.Get(ctx, decisionID)
 }

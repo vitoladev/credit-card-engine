@@ -2,22 +2,20 @@ package rules
 
 import "engine/internal/domain"
 
-type Band struct {
-	MinScore int
-	ShareBPS int64
+type band struct {
+	minScore int
+	shareBPS int64
 }
 
-// ScoreBands grants a share of the credit limit by score, capped at the
-// limit left after the current invoice. Bands are ordered by MinScore, highest first.
-type ScoreBands struct {
-	Bands []Band
-}
+// scoreBands grants a share of the credit limit by score, capped at the limit
+// left after the current invoice. Bands are ordered by minScore, highest first.
+type scoreBands []band
 
-func (p ScoreBands) Amount(c domain.Customer) int64 {
+func (bands scoreBands) amount(c domain.Customer) int64 {
 	var bps int64
-	for _, b := range p.Bands {
-		if c.CreditScore >= b.MinScore {
-			bps = b.ShareBPS
+	for _, b := range bands {
+		if c.CreditScore >= b.minScore {
+			bps = b.shareBPS
 			break
 		}
 	}

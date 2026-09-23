@@ -11,8 +11,8 @@ import (
 	"engine/internal/adapter/awsconfig"
 	"engine/internal/adapter/ddb"
 	"engine/internal/adapter/sqs"
-	"engine/internal/evaluate"
-	"engine/internal/processjob"
+	"engine/internal/adapter/telemetry"
+	"engine/internal/batch"
 	"engine/internal/rules"
 )
 
@@ -25,14 +25,18 @@ func main() {
 	lambda.Start(h.Handle)
 }
 
-func compose(ctx context.Context) (sqs.Handler, error) {
+func compose(ctx context.Context) (sqs.Consumer, error) {
 	table := os.Getenv("DECISIONS_TABLE")
 	if table == "" {
-		return sqs.Handler{}, errors.New("DECISIONS_TABLE required")
+		return sqs.Consumer{}, errors.New("DECISIONS_TABLE required")
 	}
 	cfg, err := awsconfig.Load(ctx)
 	if err != nil {
-		return sqs.Handler{}, err
+		return sqs.Consumer{}, err
 	}
-	return sqs.New(processjob.New(evaluate.New(rules.NewPolicy()), ddb.New(cfg, table))), nil
+	return sqs.Worker(batch.New(batch.Deps{
+		Items:   ddb.New(cfg, table),
+		Policy:  rules.NewPolicy(),
+		Emitter: telemetry.EMF{},
+	})), nil
 }

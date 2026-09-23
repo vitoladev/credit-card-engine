@@ -6,16 +6,9 @@ import (
 	"engine/internal/domain"
 )
 
-type MaxLatePayments struct {
-	link
-	Max int
-}
-
-func (r *MaxLatePayments) Name() string { return "max_late_payments" }
-
-func (r *MaxLatePayments) Handle(c domain.Customer) (bool, string) {
-	if c.LatePayments > r.Max {
-		return false, fmt.Sprintf("late_payments_above_%d", r.Max)
+func MaxLatePayments(maxLate int) Rule {
+	reason := fmt.Sprintf("late_payments_above_%d", maxLate)
+	return func(c domain.Customer) (string, bool) {
+		return reason, c.LatePayments > maxLate
 	}
-	return r.forward(c)
 }

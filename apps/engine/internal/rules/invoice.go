@@ -2,13 +2,8 @@ package rules
 
 import "engine/internal/domain"
 
-type InvoiceWithinLimit struct{ link }
-
-func (r *InvoiceWithinLimit) Name() string { return "invoice_within_limit" }
-
-func (r *InvoiceWithinLimit) Handle(c domain.Customer) (bool, string) {
-	if c.CurrentInvoiceCents > c.CreditLimitCents {
-		return false, "invoice_exceeds_credit_limit"
+func InvoiceWithinLimit() Rule {
+	return func(c domain.Customer) (string, bool) {
+		return "invoice_exceeds_credit_limit", c.CurrentInvoiceCents > c.CreditLimitCents
 	}
-	return r.forward(c)
 }

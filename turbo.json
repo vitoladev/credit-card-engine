@@ -5,7 +5,9 @@
   },
   "tasks": {
     "build": {},
-    "test": {},
+    "test": {
+      "passThroughEnv": ["AWS_ENDPOINT_URL", "AWS_TEST_ENDPOINT"]
+    },
     "lint": {},
     "format": {
       "cache": false
@@ -15,6 +17,9 @@
       "passThroughEnv": [
         "BASE_URL",
         "LOADTEST_RATE",
+        "LOADTEST_PATH",
+        "LOADTEST_DURATION",
+        "LOADTEST_BATCH_CUSTOMERS",
         "AWS_ACCESS_KEY_ID",
         "AWS_SECRET_ACCESS_KEY",
         "AWS_SESSION_TOKEN",
