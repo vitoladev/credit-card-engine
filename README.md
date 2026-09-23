@@ -219,6 +219,7 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 | Target | What it does |
 |---|---|
 | `make test` | `turbo run test` for the engine, the Lambdas, and the stack. Then reaps Floci Lambda containers this stack left behind. |
+| `make coverage` | The same tests with a coverage profile. Prints one total. |
 | `make loadtest` | k6 against `POST /evaluations/batch` on a local deploy. `LOADTEST_PATH=single` targets `POST /evaluations` instead. `LOADTEST_BATCH_CUSTOMERS=3-5` sends 3 to 5 customers per batch, at random. |
 | `make requests` | Runs the HTTP collection in `docs/requests` (OpenCollection, for Bruno) against the local stack. |
 | `make local-bootstrap` | CDK bootstrap on Floci account `000000000000`. |

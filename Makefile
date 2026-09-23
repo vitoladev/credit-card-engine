@@ -1,24 +1,32 @@
-.PHONY: requests test synth floci-up floci-down floci-reap local-bootstrap local-deploy local-redeploy local-destroy api-url loadtest
+.PHONY: requests test coverage synth floci-up floci-down floci-reap local-bootstrap local-deploy local-redeploy local-destroy api-url loadtest
 
 COMPOSE := docker compose -f .devcontainer/docker-compose.yml
 
 test:
 	bash scripts/with-floci-reap.sh npx turbo run test
 
+# One coverage number for the engine and the CDK stack.
+coverage:
+	bash scripts/with-floci-reap.sh go test ./apps/engine/... ./packages/infra-iac/... \
+		-count=1 -covermode=atomic \
+		-coverpkg=engine/...,infra-iac/... \
+		-coverprofile=coverage.out
+	@go tool cover -func=coverage.out | tail -1
+
 synth:
 	cdk synth
 
 floci-up:
 	@if echo "$${AWS_ENDPOINT_URL:-}" | grep -q '://floci'; then \
-		echo "Floci já é o sidecar do Dev Container ($$AWS_ENDPOINT_URL)"; \
+		echo "Floci is already the Dev Container sidecar ($$AWS_ENDPOINT_URL)"; \
 	else \
 		$(COMPOSE) up -d floci; \
-		echo "Floci em http://localhost:4566"; \
+		echo "Floci at http://localhost:4566"; \
 	fi
 
 floci-down:
 	@if echo "$${AWS_ENDPOINT_URL:-}" | grep -q '://floci'; then \
-		echo "Feche o Dev Container para parar o compose (shutdownAction: stopCompose)"; \
+		echo "Stop the Dev Container to stop Compose (shutdownAction: stopCompose)"; \
 	else \
 		$(COMPOSE) stop floci; \
 	fi
