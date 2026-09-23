@@ -87,8 +87,11 @@ commit and says why.
 
 ## 6. Security and privacy
 
-- A full CPF or a customer name never appears in a log line, a metric
-  dimension, an error message, or an API response. Outputs use the masked CPF.
+- A full CPF never appears in a log line, a metric dimension, an error
+  message, or an API response. Outputs use the masked CPF.
+- A customer name never appears in a log line, a metric dimension, or an
+  error message. API responses may carry it: a decision and a batch item name
+  the customer they are about, next to the masked CPF.
 - Full CPF and name live only in DynamoDB and its stream. Queue messages
   carry item events with no customer data (ADR 0004).
 - Every route except `/health` sits behind the IAM authorizer.
