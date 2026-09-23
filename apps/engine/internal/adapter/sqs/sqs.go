@@ -4,6 +4,7 @@ package sqs
 import (
 	"context"
 	"log/slog"
+	"sync"
 
 	"github.com/aws/aws-lambda-go/events"
 
@@ -32,22 +33,39 @@ func DeadLetters(b batch.Module) Consumer {
 	return Consumer{handle: b.DeadLetter, ackMalformed: true}
 }
 
+// Handle processes the records concurrently: each one is I/O on its own item,
+// and the conditional transitions make a race harmless. The response lists
+// the failed records in the order they arrived.
 func (c Consumer) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEventResponse, error) {
+	failed := make([]bool, len(ev.Records))
+	var wg sync.WaitGroup
+	for i, rec := range ev.Records {
+		wg.Go(func() { failed[i] = !c.process(ctx, rec) })
+	}
+	wg.Wait()
 	var resp events.SQSEventResponse
-	for _, rec := range ev.Records {
-		a, err := batch.ParseItemEvent(rec.Body)
-		if err != nil && c.ackMalformed {
-			continue
-		}
-		if err == nil {
-			err = c.handle(ctx, a)
-		}
-		if err != nil {
-			failRecord(rec, err, a)
+	for i, rec := range ev.Records {
+		if failed[i] {
 			resp.BatchItemFailures = append(resp.BatchItemFailures, events.SQSBatchItemFailure{ItemIdentifier: rec.MessageId})
 		}
 	}
 	return resp, nil
+}
+
+// process handles one record and reports whether SQS may delete it.
+func (c Consumer) process(ctx context.Context, rec events.SQSMessage) bool {
+	e, err := batch.ParseItemEvent(rec.Body)
+	if err != nil && c.ackMalformed {
+		return true
+	}
+	if err == nil {
+		err = c.handle(ctx, e)
+	}
+	if err != nil {
+		failRecord(rec, err, e)
+		return false
+	}
+	return true
 }
 
 // failRecord logs the ids of a failed record, never its body: the body holds

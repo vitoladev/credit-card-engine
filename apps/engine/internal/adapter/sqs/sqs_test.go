@@ -24,8 +24,8 @@ var ana = domain.Customer{Name: "Ana", CPF: "39053344705", CreditScore: 780, Cre
 
 type discard struct{}
 
-func (discard) ItemDecided(string, string, domain.Result, time.Duration) {}
-func (discard) ItemFailed(string, string, int)                           {}
+func (discard) ItemDecided(string, string, domain.Result, time.Duration, time.Duration) {}
+func (discard) ItemFailed(string, string, int)                                          {}
 
 // newBatch stores batch b1 with two items on Floci and returns their IDs. The
 // queue consumers never publish, so the module has no Publisher.
@@ -79,22 +79,33 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-func TestWorkerReportsOnlyTheFailedRecords(t *testing.T) {
-	b, faults, id := newBatch(t)
-	ev := events.SQSEvent{Records: []events.SQSMessage{
-		record(t, "a", batch.NewItemEvent("b1", id[1], 1, batch.Queued)), // the store fails
-		record(t, "b", batch.NewItemEvent("b1", id[0], 1, batch.Queued)), // decided
-		record(t, "c", batch.NewItemEvent("b1", id[0], 1, batch.Queued)), // redelivery
-		record(t, "d", batch.NewItemEvent("nope", id[0], 1, batch.Queued)),
-		{MessageId: "e", Body: "not json"},
-	}}
-	faults.FailCalls("UpdateItem", 1)
-	resp, err := sqs.Worker(b).Handle(t.Context(), ev)
+func handle(t *testing.T, c sqs.Consumer, records ...events.SQSMessage) string {
+	t.Helper()
+	resp, err := c.Handle(t.Context(), events.SQSEvent{Records: records})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := failures(resp); got != "a,d,e" {
-		t.Fatalf("failures=%s", got)
+	return failures(resp)
+}
+
+// Records run concurrently, so an injected store failure is armed for a
+// batch of one record: it cannot land on another record.
+func TestWorkerReportsOnlyTheFailedRecords(t *testing.T) {
+	b, faults, id := newBatch(t)
+	w := sqs.Worker(b)
+
+	faults.FailCalls("UpdateItem", 1)
+	if got := handle(t, w, record(t, "a", batch.NewItemEvent("b1", id[1], 1, batch.Queued))); got != "a" {
+		t.Fatalf("store failure: failures=%s", got)
+	}
+	got := handle(t, w,
+		record(t, "b", batch.NewItemEvent("b1", id[0], 1, batch.Queued)), // decided
+		record(t, "c", batch.NewItemEvent("b1", id[0], 1, batch.Queued)), // redelivered at the same time
+		record(t, "d", batch.NewItemEvent("nope", id[0], 1, batch.Queued)),
+		events.SQSMessage{MessageId: "e", Body: "not json"},
+	)
+	if got != "d,e" {
+		t.Fatalf("failures=%s, want them in arrival order", got)
 	}
 	if got := statuses(t, b); !slices.Equal(got, []batch.ItemStatus{batch.Approved, batch.Queued}) {
 		t.Fatalf("statuses=%v", got)
@@ -103,18 +114,18 @@ func TestWorkerReportsOnlyTheFailedRecords(t *testing.T) {
 
 func TestDeadLettersFailTheItemAndAcknowledgePoison(t *testing.T) {
 	b, faults, id := newBatch(t)
-	ev := events.SQSEvent{Records: []events.SQSMessage{
-		record(t, "a", batch.NewItemEvent("b1", id[0], 1, batch.Queued)), // the store fails
+	dl := sqs.DeadLetters(b)
+
+	faults.FailCalls("UpdateItem", 1)
+	if got := handle(t, dl, record(t, "a", batch.NewItemEvent("b1", id[0], 1, batch.Queued))); got != "a" {
+		t.Fatalf("store failure: failures=%s", got)
+	}
+	got := handle(t, dl,
 		record(t, "b", batch.NewItemEvent("b1", id[1], 1, batch.Queued)), // failed
 		record(t, "c", batch.NewItemEvent("nope", id[0], 1, batch.Queued)),
-		{MessageId: "d", Body: "not json"},
-	}}
-	faults.FailCalls("UpdateItem", 1)
-	resp, err := sqs.DeadLetters(b).Handle(t.Context(), ev)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := failures(resp); got != "a" {
+		events.SQSMessage{MessageId: "d", Body: "not json"},
+	)
+	if got != "" {
 		t.Fatalf("failures=%s", got)
 	}
 	if got := statuses(t, b); !slices.Equal(got, []batch.ItemStatus{batch.Queued, batch.Failed}) {
