@@ -65,6 +65,7 @@ linters:
           files:
             - "**/internal/batch/**"
             - "**/internal/evaluate/**"
+            - "**/internal/idempotency/**"
             - "!$test"
           deny:
             - pkg: github.com/aws

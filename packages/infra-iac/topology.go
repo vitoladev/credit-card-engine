@@ -58,6 +58,8 @@ const (
 	itemEndToEndAlarmMs = 5_000
 	queueAgeAlarmS      = 60
 
+	// lambdaTimeoutS must stay under idempotency.Lease (10 s, ADR 0005), or a
+	// retry could take a key while the first request still runs.
 	lambdaTimeoutS = 3
 	lambdaMemoryMB = 256
 	latencyAlarmMs = 800

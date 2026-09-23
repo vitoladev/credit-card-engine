@@ -23,7 +23,15 @@ func TestStackHasTheDayZeroSurface(t *testing.T) {
 	template.ResourceCountIs(jsii.String("AWS::ApiGatewayV2::Stage"), jsii.Number(1))
 	template.ResourceCountIs(jsii.String("AWS::Lambda::Function"), jsii.Number(4))
 	template.ResourceCountIs(jsii.String("AWS::SQS::Queue"), jsii.Number(2))
-	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Alarm"), jsii.Number(8))
+	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Alarm"), jsii.Number(10))
+	// Logged-and-acknowledged failures alarm through metric filters.
+	template.ResourceCountIs(jsii.String("AWS::Logs::MetricFilter"), jsii.Number(2))
+	template.HasResourceProperties(jsii.String("AWS::Logs::MetricFilter"), map[string]any{
+		"FilterPattern": `{ ($.msg = "stream_record_skipped") }`,
+	})
+	template.HasResourceProperties(jsii.String("AWS::Logs::MetricFilter"), map[string]any{
+		"FilterPattern": `{ ($.msg = "batch_rollback_failed") || ($.msg = "idempotency_complete_failed") || ($.msg = "idempotency_release_failed") }`,
+	})
 
 	template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), map[string]any{
 		"BillingMode": "PAY_PER_REQUEST",

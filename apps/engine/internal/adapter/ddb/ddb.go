@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"strconv"
 	"sync"
@@ -35,6 +36,9 @@ const (
 	writeTries    = 6
 	backoffBase   = 25 * time.Millisecond
 	retryInFlight = 8
+	// rollbackTimeout bounds the delete of a batch whose Create failed. It
+	// runs past the request's deadline, inside the Lambda's own timeout.
+	rollbackTimeout = 2 * time.Second
 )
 
 type Store struct {
@@ -134,7 +138,13 @@ func (st *Store) Create(ctx context.Context, batchID string, items []batch.Item)
 	}
 	wg.Wait()
 	if err := errors.Join(errs...); err != nil {
-		if delErr := st.deleteBatch(ctx, batchID); delErr != nil {
+		// The rollback runs even when the request's deadline caused the
+		// failure: rows left behind would be relayed and evaluated for a batch
+		// the client was told was not recorded.
+		rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rollbackTimeout)
+		defer cancel()
+		if delErr := st.deleteBatch(rbCtx, batchID); delErr != nil {
+			slog.Error("batch_rollback_failed", slog.String("batch_id", batchID), slog.String("error", delErr.Error()))
 			return errors.Join(err, delErr)
 		}
 		return err
@@ -409,7 +419,9 @@ func (st *Store) Page(ctx context.Context, batchID string, q batch.PageQuery) (b
 			break
 		}
 		if len(p.Items) == q.Limit {
-			p.More = true
+			if p.More, err = st.more(ctx, in, out.LastEvaluatedKey); err != nil {
+				return batch.Page{}, err
+			}
 			break
 		}
 		in.ExclusiveStartKey = out.LastEvaluatedKey
@@ -418,6 +430,32 @@ func (st *Store) Page(ctx context.Context, batchID string, q batch.PageQuery) (b
 		return batch.Page{}, batch.ErrNotFound
 	}
 	return p, nil
+}
+
+// more reports whether a row q selects follows start. DynamoDB returns a
+// LastEvaluatedKey whenever a Query stops at its Limit, even on the last row,
+// so a full page checks before it hands out a cursor to an empty page.
+func (st *Store) more(ctx context.Context, in *dynamodb.QueryInput, start map[string]types.AttributeValue) (bool, error) {
+	probe := *in
+	probe.Select = types.SelectCount
+	probe.ExclusiveStartKey = start
+	probe.Limit = nil
+	if in.FilterExpression == nil {
+		probe.Limit = new(int32(1))
+	}
+	for {
+		out, err := st.client.Query(ctx, &probe)
+		if err != nil {
+			return false, err
+		}
+		if out.Count > 0 {
+			return true, nil
+		}
+		if out.LastEvaluatedKey == nil {
+			return false, nil
+		}
+		probe.ExclusiveStartKey = out.LastEvaluatedKey
+	}
 }
 
 // pageInput is the Query over the batch's ITEM# rows that q selects.

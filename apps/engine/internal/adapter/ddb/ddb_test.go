@@ -1,7 +1,10 @@
 package ddb_test
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -352,6 +355,19 @@ func TestPageFollowsTheCursorAndTheFilter(t *testing.T) {
 	if got, _ := all(t, st, "b1", batch.PageQuery{Status: batch.Failed, Limit: 2}); !slices.Equal(ids(got), even) {
 		t.Fatalf("failed=%v want %v", ids(got), even)
 	}
+	// A page that ends on the last match has no cursor, even when unmatched
+	// rows follow it.
+	for name, q := range map[string]batch.PageQuery{
+		"whole batch":         {Limit: 10},
+		"last three":          {After: id[6], Limit: 3},
+		"last two failed":     {Status: batch.Failed, After: id[4], Limit: 2},
+		"unmatched rows left": {Status: batch.Failed, After: id[6], Limit: 1},
+	} {
+		p, err := st.Page(ctx, "b1", q)
+		if err != nil || len(p.Items) != q.Limit || p.More {
+			t.Fatalf("%s: page=%d more=%v err=%v", name, len(p.Items), p.More, err)
+		}
+	}
 	last, err := st.Page(ctx, "b1", batch.PageQuery{After: id[9], Limit: 3})
 	if err != nil || len(last.Items) != 0 || last.More {
 		t.Fatalf("after the last item=%+v err=%v", last, err)
@@ -389,6 +405,56 @@ func TestPageFailsOnAFailedLaterQuery(t *testing.T) {
 	st.faults.FailCallsAfter("Query", 1, 1)
 	if _, err := st.Page(t.Context(), "b1", batch.PageQuery{Status: batch.Failed, Limit: 1}); !errors.Is(err, flocitest.ErrInjected) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+// A rollback that fails too leaves rows behind: the error says so and the log
+// names the batch, so an operator can find it.
+func TestCreateLogsTheBatchWhenTheRollbackFails(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	st := newStore(t)
+	st.faults.FailCalls("BatchWriteItem", 1)
+	st.faults.FailCalls("Query", 1)
+	customers := make([]domain.Customer, 30)
+	for i := range customers {
+		customers[i] = domain.Customer{Name: "Ana", CPF: "39053344705"}
+	}
+	err := st.Create(t.Context(), "b1", newItems(customers))
+	if !errors.Is(err, flocitest.ErrInjected) {
+		t.Fatalf("err=%v", err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, `"msg":"batch_rollback_failed"`) || !strings.Contains(logs, `"batch_id":"b1"`) {
+		t.Fatalf("logs=%s", logs)
+	}
+	if strings.Contains(logs, "39053344705") || strings.Contains(logs, "Ana") {
+		t.Fatalf("leaked customer data: %s", logs)
+	}
+}
+
+// The rollback runs on its own deadline: a request that already timed out
+// still removes the rows it wrote.
+func TestCreateRollsBackAfterTheRequestDeadline(t *testing.T) {
+	st := newStore(t)
+	st.faults.FailCalls("BatchWriteItem", 1)
+	ctx, cancel := context.WithCancel(t.Context())
+	customers := make([]domain.Customer, 30)
+	for i := range customers {
+		customers[i] = domain.Customer{Name: "Ana", CPF: "39053344705"}
+	}
+	items := newItems(customers)
+	// Cancel once the writes are done, before the rollback: the injected
+	// failure makes Create roll back on a cancelled request context.
+	st.faults.OnCall("Query", cancel)
+	if err := st.Create(ctx, "b1", items); err == nil {
+		t.Fatal("expected write failure")
+	}
+	if n := flocitest.Rows(t, st.cfg, st.table); n != 0 {
+		t.Fatalf("rows=%d", n)
 	}
 }
 

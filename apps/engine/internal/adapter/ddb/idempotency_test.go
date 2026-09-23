@@ -1,6 +1,7 @@
 package ddb_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 	"uuid"
@@ -86,6 +87,35 @@ func TestAReleasedKeyCanBeClaimedAgain(t *testing.T) {
 	}
 	if _, ok := claim(t, k, "key", claimAt("fp", time.Now())); !ok {
 		t.Fatal("released key was not claimed")
+	}
+}
+
+// Claims that race on one key: DynamoDB's condition lets exactly one win.
+func TestRacingClaimsHaveOneWinner(t *testing.T) {
+	k := ddb.NewKeys(newStore(t).Store)
+	now := time.Now()
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		wins int
+	)
+	for range 8 {
+		wg.Go(func() {
+			_, ok, err := k.Claim(t.Context(), "key", claimAt("fp", now))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if ok {
+				mu.Lock()
+				wins++
+				mu.Unlock()
+			}
+		})
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("wins=%d", wins)
 	}
 }
 

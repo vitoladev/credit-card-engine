@@ -467,12 +467,31 @@ func TestRelayPublishFailureIsDeliveredAgain(t *testing.T) {
 
 	h.faults.DropEntries(2)
 	ev, resp := h.relay()
-	if len(resp.BatchItemFailures) != 2 {
-		t.Fatalf("failures=%+v", resp.BatchItemFailures)
-	}
 	wantStatuses(t, h.items(acc.BatchID), batch.Queued, batch.Queued, batch.Queued)
-	if len(h.emit.failed) != 0 || len(h.receive()) != 1 {
-		t.Fatalf("failed events=%+v", h.emit.failed)
+	published := h.receive()
+	if len(h.emit.failed) != 0 || len(published) != 1 {
+		t.Fatalf("failed events=%+v published=%+v", h.emit.failed, published)
+	}
+	// The failures name the stream records of the two unpublished items, so
+	// the checkpoint never moves past them.
+	var want []string
+	for _, rec := range ev.Records {
+		e, ok, err := ddb.ItemEventFrom(rec)
+		if err != nil || !ok {
+			t.Fatalf("record %s: ok=%v err=%v", rec.EventID, ok, err)
+		}
+		if e.ItemID != published[0].ItemID {
+			want = append(want, rec.Change.SequenceNumber)
+		}
+	}
+	var got []string
+	for _, f := range resp.BatchItemFailures {
+		got = append(got, f.ItemIdentifier)
+	}
+	slices.Sort(want)
+	slices.Sort(got)
+	if len(want) != 2 || !slices.Equal(got, want) {
+		t.Fatalf("failures=%v want sequence numbers %v", got, want)
 	}
 
 	// The event source mapping delivers the batch again from the failed records.

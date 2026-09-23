@@ -68,8 +68,8 @@ func (c Consumer) process(ctx context.Context, rec events.SQSMessage) bool {
 	return true
 }
 
-// failRecord logs the ids of a failed record, never its body: the body holds
-// the full CPF and the name.
+// failRecord logs the ids of a failed record, never its body: a body that
+// does not parse could hold anything.
 func failRecord(rec events.SQSMessage, err error, a batch.ItemEvent) {
 	attrs := []any{slog.String("message_id", rec.MessageId), slog.String("error", err.Error())}
 	if a.BatchID != "" {

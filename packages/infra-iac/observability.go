@@ -1,15 +1,18 @@
 package main
 
 import (
+	"strings"
+
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsapigatewayv2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatch"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 	"github.com/aws/jsii-runtime-go"
 )
 
-func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslambda.IFunction, api awsapigatewayv2.HttpApi, queue, dlq awssqs.IQueue) {
+func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslambda.Function, api awsapigatewayv2.HttpApi, queue, dlq awssqs.IQueue) {
 	minute := awscdk.Duration_Minutes(jsii.Number(1))
 	alarmOnSum(stack, "Api5xx", "API Gateway 5xx ≥ 1 in 1 minute", api.MetricServerError, api5xxAlarmThreshold)
 	alarmOnSum(stack, "WorkerErrors", "Worker Lambda errors ≥ 1 in 1 minute", worker.MetricErrors, workerErrorAlarmThreshold)
@@ -54,6 +57,14 @@ func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslam
 		EvaluationPeriods:  jsii.Number(3),
 		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
 	})
+	// Failures that are logged and acknowledged, so no Lambda error or
+	// iterator age shows them. A skipped stream record can leave its item
+	// QUEUED with no message; a failed rollback leaves rows of a batch the
+	// client was told was not recorded; a failed idempotency write leaves a key
+	// pending until its lease ends.
+	alarmOnLog(stack, "RelaySkippedRecords", "Relay skipped an unreadable stream record", relay.LogGroup(), "stream_record_skipped")
+	alarmOnLog(stack, "EvaluateStoreBookkeeping", "Batch rollback or idempotency key write failed",
+		fn.LogGroup(), "batch_rollback_failed", "idempotency_complete_failed", "idempotency_release_failed")
 	fn.MetricDuration(&awscloudwatch.MetricOptions{
 		Statistic: jsii.String("p99"),
 		Period:    minute,
@@ -134,6 +145,32 @@ func alarmOnSum(stack awscdk.Stack, id, description string, metric func(*awsclou
 		Threshold:         jsii.Number(threshold),
 		EvaluationPeriods: jsii.Number(1),
 		TreatMissingData:  awscloudwatch.TreatMissingData_NOT_BREACHING,
+	})
+}
+
+// alarmOnLog counts the JSON log lines whose msg is one of msgs, as the
+// metric <id>, and alarms on the first one in a minute.
+func alarmOnLog(stack awscdk.Stack, id, description string, logs awslogs.ILogGroup, msgs ...string) {
+	terms := make([]string, len(msgs))
+	for i, m := range msgs {
+		terms[i] = `($.msg = "` + m + `")`
+	}
+	filter := awslogs.NewMetricFilter(stack, jsii.String(id+"Filter"), &awslogs.MetricFilterProps{
+		LogGroup:        logs,
+		FilterPattern:   awslogs.FilterPattern_Literal(jsii.String("{ " + strings.Join(terms, " || ") + " }")),
+		MetricNamespace: jsii.String(metricsNamespace),
+		MetricName:      jsii.String(id),
+		MetricValue:     jsii.String("1"),
+	})
+	filter.Metric(&awscloudwatch.MetricOptions{
+		Statistic: jsii.String("Sum"),
+		Period:    awscdk.Duration_Minutes(jsii.Number(1)),
+	}).CreateAlarm(stack, jsii.String(id), &awscloudwatch.CreateAlarmOptions{
+		AlarmDescription:   jsii.String(description),
+		Threshold:          jsii.Number(1),
+		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+		EvaluationPeriods:  jsii.Number(1),
+		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
 	})
 }
 

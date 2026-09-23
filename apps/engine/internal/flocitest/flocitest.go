@@ -34,6 +34,7 @@ type Faults struct {
 	mu      sync.Mutex
 	calls   map[string]int
 	skips   map[string]int
+	hooks   map[string]func()
 	entries int
 }
 
@@ -59,6 +60,22 @@ func (f *Faults) DropEntries(n int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.entries = n
+}
+
+// OnCall runs fn right before the next call of the operation is sent, once,
+// for example to cancel a context between two steps of an adapter call.
+func (f *Faults) OnCall(op string, fn func()) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hooks[op] = fn
+}
+
+func (f *Faults) takeHook(op string) func() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	fn := f.hooks[op]
+	delete(f.hooks, op)
+	return fn
 }
 
 func (f *Faults) takeCall(op string) bool {
@@ -103,7 +120,7 @@ func Config(t *testing.T) (aws.Config, *Faults) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &Faults{calls: map[string]int{}, skips: map[string]int{}}
+	f := &Faults{calls: map[string]int{}, skips: map[string]int{}, hooks: map[string]func(){}}
 	cfg.APIOptions = append(cfg.APIOptions, f.failCalls, f.dropEntries)
 	return cfg, f
 }
@@ -111,7 +128,11 @@ func Config(t *testing.T) (aws.Config, *Faults) {
 func (f *Faults) failCalls(stack *middleware.Stack) error {
 	return stack.Initialize.Add(middleware.InitializeMiddlewareFunc("flocitestFailCalls",
 		func(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (middleware.InitializeOutput, middleware.Metadata, error) {
-			if f.takeCall(awsmiddleware.GetOperationName(ctx)) {
+			op := awsmiddleware.GetOperationName(ctx)
+			if fn := f.takeHook(op); fn != nil {
+				fn()
+			}
+			if f.takeCall(op) {
 				return middleware.InitializeOutput{}, middleware.Metadata{}, ErrInjected
 			}
 			return next.HandleInitialize(ctx, in)
