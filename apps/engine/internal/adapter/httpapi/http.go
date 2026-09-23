@@ -15,15 +15,21 @@ import (
 	"engine/internal/batch"
 	"engine/internal/domain"
 	"engine/internal/evaluate"
+	"engine/internal/idempotency"
 )
+
+// idempotencyHeader names the client's key. API Gateway lowercases header
+// names in the event.
+const idempotencyHeader = "idempotency-key"
 
 type Handler struct {
 	evaluate evaluate.Module
 	batch    batch.Module
+	keys     idempotency.Module
 }
 
-func New(ev evaluate.Module, b batch.Module) Handler {
-	return Handler{evaluate: ev, batch: b}
+func New(ev evaluate.Module, b batch.Module, keys idempotency.Module) Handler {
+	return Handler{evaluate: ev, batch: b, keys: keys}
 }
 
 func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
@@ -42,9 +48,9 @@ func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 	case method == "GET" && path == "/health":
 		return jsonResp(200, map[string]string{"status": "ok"}), nil
 	case method == "POST" && path == "/evaluations":
-		return h.one(ctx, req)
+		return h.once(ctx, req, h.one), nil
 	case method == "POST" && path == "/evaluations/batch":
-		return h.enqueue(ctx, req)
+		return h.once(ctx, req, h.enqueue), nil
 	case method == "POST":
 		return h.recoverItems(ctx, path), nil
 	case method != "GET":
@@ -57,6 +63,42 @@ func (h Handler) Handle(ctx context.Context, req events.APIGatewayV2HTTPRequest)
 		return h.listItems(ctx, id, req.QueryStringParameters), nil
 	}
 	return notFound(), nil
+}
+
+// once runs an evaluation route at most once per Idempotency-Key (ADR 0005). A
+// request without the header runs every time.
+func (h Handler) once(ctx context.Context, req events.APIGatewayV2HTTPRequest,
+	route func(context.Context, events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse,
+) events.APIGatewayV2HTTPResponse {
+	key, ok := req.Headers[idempotencyHeader]
+	if !ok {
+		return route(ctx, req)
+	}
+	request := req.RequestContext.HTTP.Method + " " + req.RequestContext.HTTP.Path + "\n" + req.Body
+	r, replayed, err := h.keys.Do(ctx, key, request, func() idempotency.Response {
+		resp := route(ctx, req)
+		return idempotency.Response{Status: resp.StatusCode, Body: resp.Body}
+	})
+	switch {
+	case errors.Is(err, idempotency.ErrInvalidKey):
+		return jsonResp(400, map[string]any{"error": "invalid_idempotency_key", "max_length": idempotency.MaxKeyLength})
+	case errors.Is(err, idempotency.ErrKeyReused):
+		return jsonResp(422, map[string]string{"error": "idempotency_key_reused"})
+	case errors.Is(err, idempotency.ErrInProgress):
+		return jsonResp(409, map[string]string{"error": "idempotency_key_in_progress"})
+	case err != nil:
+		log5xx(err)
+		return jsonResp(503, map[string]string{"error": "store_failed"})
+	}
+	resp := events.APIGatewayV2HTTPResponse{
+		StatusCode: r.Status,
+		Headers:    map[string]string{"content-type": "application/json"},
+		Body:       r.Body,
+	}
+	if replayed {
+		resp.Headers["idempotent-replayed"] = "true"
+	}
+	return resp
 }
 
 // pathID returns the single segment between prefix and suffix.
@@ -77,20 +119,20 @@ type decisionResponse struct {
 	domain.Result
 }
 
-func (h Handler) one(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+func (h Handler) one(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
 	var c domain.Customer
 	if err := json.Unmarshal([]byte(req.Body), &c); err != nil {
-		return jsonResp(400, map[string]string{"error": "invalid_json"}), nil //nolint:nilerr // the adapter maps the error to a status code
+		return jsonResp(400, map[string]string{"error": "invalid_json"})
 	}
 	if v := c.Validate(); len(v) > 0 {
-		return jsonResp(422, map[string]any{"error": "invalid_customer", "violations": v}), nil
+		return jsonResp(422, map[string]any{"error": "invalid_customer", "violations": v})
 	}
 	id, r, err := h.evaluate.Evaluate(ctx, c)
 	if err != nil {
 		log5xx(err)
-		return jsonResp(503, map[string]string{"error": "decision_not_recorded"}), nil
+		return jsonResp(503, map[string]string{"error": "decision_not_recorded"})
 	}
-	return jsonResp(200, decisionResponse{DecisionID: id, Result: r}), nil
+	return jsonResp(200, decisionResponse{DecisionID: id, Result: r})
 }
 
 func (h Handler) decision(ctx context.Context, id string) (events.APIGatewayV2HTTPResponse, error) {
@@ -105,10 +147,10 @@ func (h Handler) decision(ctx context.Context, id string) (events.APIGatewayV2HT
 	return jsonResp(200, decisionResponse{DecisionID: id, Result: r}), nil
 }
 
-func (h Handler) enqueue(ctx context.Context, req events.APIGatewayV2HTTPRequest) (events.APIGatewayV2HTTPResponse, error) {
+func (h Handler) enqueue(ctx context.Context, req events.APIGatewayV2HTTPRequest) events.APIGatewayV2HTTPResponse {
 	customers, err := parseCustomers(req.Body)
 	if err != nil {
-		return jsonResp(400, map[string]string{"error": "invalid_batch"}), nil //nolint:nilerr // the adapter maps the error to a status code
+		return jsonResp(400, map[string]string{"error": "invalid_batch"})
 	}
 	var violations []indexedViolation
 	for i := range customers {
@@ -117,17 +159,17 @@ func (h Handler) enqueue(ctx context.Context, req events.APIGatewayV2HTTPRequest
 		}
 	}
 	if len(violations) > 0 {
-		return jsonResp(422, map[string]any{"error": "invalid_customer", "violations": violations}), nil
+		return jsonResp(422, map[string]any{"error": "invalid_customer", "violations": violations})
 	}
 	acc, err := h.batch.Submit(ctx, customers)
 	if errors.Is(err, batch.ErrTooLarge) {
-		return jsonResp(422, map[string]any{"error": "batch_too_large", "max": h.batch.MaxCustomers()}), nil
+		return jsonResp(422, map[string]any{"error": "batch_too_large", "max": h.batch.MaxCustomers()})
 	}
 	if err != nil {
 		log5xx(err)
-		return jsonResp(503, map[string]string{"error": "batch_not_recorded"}), nil
+		return jsonResp(503, map[string]string{"error": "batch_not_recorded"})
 	}
-	return jsonResp(202, acc), nil
+	return jsonResp(202, acc)
 }
 
 // recoverItems serves the operator routes on failed batch items.

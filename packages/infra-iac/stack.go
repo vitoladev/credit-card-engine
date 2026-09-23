@@ -46,6 +46,8 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		BillingMode: awsdynamodb.BillingMode_PAY_PER_REQUEST,
 		Encryption:  awsdynamodb.TableEncryption_AWS_MANAGED,
 		Stream:      awsdynamodb.StreamViewType_NEW_IMAGE,
+		// Idempotency keys (ADR 0005) expire on their own after 24 hours.
+		TimeToLiveAttribute: jsii.String(tableTTLAttribute),
 		// Continuous backups: restore the table to any second of the last 35
 		// days after a bad write or an operator error.
 		PointInTimeRecoverySpecification: &awsdynamodb.PointInTimeRecoverySpecification{

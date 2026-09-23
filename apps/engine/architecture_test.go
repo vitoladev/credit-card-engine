@@ -31,6 +31,8 @@ var rules = []rule{
 		from: "internal/evaluate", to: []string{"internal/batch", "internal/adapter", "internal/flocitest"}},
 	{name: "batch imports evaluate or an adapter",
 		from: "internal/batch", to: []string{"internal/evaluate", "internal/adapter", "internal/flocitest"}},
+	{name: "idempotency imports another internal package",
+		from: "internal/idempotency", to: []string{"internal/domain", "internal/rules", "internal/evaluate", "internal/batch", "internal/adapter", "internal/flocitest"}},
 	{name: "an adapter imports the test helper",
 		from: "internal/adapter", to: []string{"internal/flocitest"}},
 	{name: "adapter/httpapi imports another adapter",
@@ -98,7 +100,7 @@ func ExternalImportViolations(g Graph) []string {
 			continue
 		}
 		for _, imp := range imports {
-			if underAny(from, "internal/domain", "internal/rules", "internal/evaluate", "internal/batch") &&
+			if underAny(from, "internal/domain", "internal/rules", "internal/evaluate", "internal/batch", "internal/idempotency") &&
 				strings.HasPrefix(imp, "github.com/aws/") {
 				out = append(out, from+" -> "+imp+" (domain, rules, and modules import AWS; ADR 0002)")
 			}

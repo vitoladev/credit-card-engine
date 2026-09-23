@@ -14,6 +14,7 @@ import (
 	"engine/internal/adapter/telemetry"
 	"engine/internal/batch"
 	"engine/internal/evaluate"
+	"engine/internal/idempotency"
 	"engine/internal/rules"
 )
 
@@ -47,5 +48,5 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 		Emitter:      telemetry.EMF{},
 		MaxCustomers: batchSize,
 	})
-	return httpapi.New(evaluate.New(policy, st, telemetry.EMF{}), b), nil
+	return httpapi.New(evaluate.New(policy, st, telemetry.EMF{}), b, idempotency.New(ddb.NewKeys(st))), nil
 }

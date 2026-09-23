@@ -17,10 +17,11 @@ const (
 	tableID          = "Decisions"
 	alarmID          = "EvaluateAlarms"
 
-	// Generic keys: one table holds DECISION# rows and BATCH# item rows.
+	// Generic keys: one table holds DECISION#, BATCH# item, and IDEMPOTENCY# rows.
 	// Its stream (NEW_IMAGE) feeds the relay, the outbox of ADR 0004.
 	tablePartitionKey = "pk"
 	tableSortKey      = "sk"
+	tableTTLAttribute = "expires_at"
 
 	// Loadtest: 100 req/s by default on Floci; the 1000 req/s NFR run is
 	// LOADTEST_RATE=1000 make loadtest against a real AWS stack.

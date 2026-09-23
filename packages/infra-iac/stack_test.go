@@ -113,6 +113,7 @@ func TestStackProtectsDataAndWatchesTheBatchSLO(t *testing.T) {
 	template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), map[string]any{
 		"PointInTimeRecoverySpecification": map[string]any{"PointInTimeRecoveryEnabled": true},
 		"SSESpecification":                 map[string]any{"SSEEnabled": true},
+		"TimeToLiveSpecification":          map[string]any{"AttributeName": "expires_at", "Enabled": true},
 	})
 	for _, q := range *template.FindResources(jsii.String("AWS::SQS::Queue"), nil) {
 		if (*q)["Properties"].(map[string]any)["SqsManagedSseEnabled"] != true {

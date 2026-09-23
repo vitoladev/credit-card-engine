@@ -22,6 +22,7 @@ import (
 	"engine/internal/domain"
 	"engine/internal/evaluate"
 	"engine/internal/flocitest"
+	"engine/internal/idempotency"
 	"engine/internal/rules"
 )
 
@@ -63,7 +64,7 @@ func newHarnessWithBatchSize(t *testing.T, size int) *harness {
 	h.batch = batch.New(batch.Deps{
 		Items: st, Publisher: sqspub.New(cfg, h.queue), Policy: rules.NewPolicy(), Emitter: discard{}, MaxCustomers: size,
 	})
-	h.http = httpapi.New(evaluate.New(rules.NewPolicy(), st, discard{}), h.batch)
+	h.http = httpapi.New(evaluate.New(rules.NewPolicy(), st, discard{}), h.batch, idempotency.New(ddb.NewKeys(st)))
 	return h
 }
 
