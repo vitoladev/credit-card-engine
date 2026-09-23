@@ -15,4 +15,58 @@ runtime:
   - expression: res.status
     operator: eq
     value: '200'
+examples:
+  - name: "200"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: GET
+      url: "{{baseUrl}}/batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?status=DENIED"
+      params:
+      - name: "status"
+        value: "DENIED"
+        type: query
+    response:
+      status: 200
+      statusText: "OK"
+      body:
+        type: json
+        data: |-
+          {
+            "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
+            "items": [
+              {
+                "item_id": "01a0cf75-997b-73fb-b8fc-cfa964b754ed",
+                "name": "Bruno",
+                "cpf_masked": "123.***.***-09",
+                "status": "DENIED",
+                "reasons": [
+                  "score_below_600"
+                ],
+                "revolving_amount_cents": 0,
+                "attempts": 1
+              },
+              {
+                "item_id": "01a0cf75-997b-73fc-91ec-71f6f128fa1b",
+                "name": "Carla",
+                "cpf_masked": "987.***.***-00",
+                "status": "DENIED",
+                "reasons": [
+                  "invoice_exceeds_credit_limit"
+                ],
+                "revolving_amount_cents": 0,
+                "attempts": 1
+              },
+              {
+                "item_id": "01a0cf75-997b-73fe-b60f-5e53399c0a64",
+                "name": "Diego",
+                "cpf_masked": "111.***.***-96",
+                "status": "DENIED",
+                "reasons": [
+                  "late_payments_above_2"
+                ],
+                "revolving_amount_cents": 0,
+                "attempts": 1
+              }
+            ]
+          }
 docs: 'Reads the by-status index: only the items in that status (ADR 0007).'

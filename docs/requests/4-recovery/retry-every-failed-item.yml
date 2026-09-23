@@ -11,4 +11,19 @@ runtime:
   - expression: res.status
     operator: eq
     value: '202'
+examples:
+  - name: "202"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/retry-failed"
+    response:
+      status: 202
+      statusText: "Accepted"
+      body:
+        type: json
+        data: |-
+          {
+            "requeued": 0
+          }
 docs: 'Returns {requeued: n}: the FAILED items under 5 attempts.'

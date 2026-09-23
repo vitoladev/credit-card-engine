@@ -31,3 +31,42 @@ runtime:
       test("Denied: no credit limit (Joana)", function () {
         expect(res.body.reasons[0]).to.equal("no_credit_limit");
       });
+examples:
+  - name: "200"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/evaluations"
+      headers:
+      - name: "content-type"
+        value: "application/json"
+      body:
+        type: json
+        data: |-
+          {
+            "name": "Joana",
+            "cpf": "666.777.888-30",
+            "credit_score": 750,
+            "current_invoice_cents": 0,
+            "credit_limit_cents": 0,
+            "late_payments": 0,
+            "monthly_spend_cents": [
+              10000
+            ]
+          }
+    response:
+      status: 200
+      statusText: "OK"
+      body:
+        type: json
+        data: |-
+          {
+            "decision_id": "0aead90b-bc69-4937-94af-a4bb3467a413",
+            "name": "Joana",
+            "cpf_masked": "666.***.***-30",
+            "decision": "DENIED",
+            "revolving_amount_cents": 0,
+            "reasons": [
+              "no_credit_limit"
+            ]
+          }

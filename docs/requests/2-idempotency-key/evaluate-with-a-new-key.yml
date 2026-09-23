@@ -37,3 +37,46 @@ runtime:
       bru.setVar("idempotencyKey", uuidv4());
   - type: after-response
     code: bru.setVar("keyedDecisionId", res.body.decision_id);
+examples:
+  - name: "200"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/evaluations"
+      headers:
+      - name: "Idempotency-Key"
+        value: "eb9060ab-c793-48a4-9fe2-ea39fa3c8c4e"
+      - name: "content-type"
+        value: "application/json"
+      body:
+        type: json
+        data: |-
+          {
+            "name": "Eva",
+            "cpf": "222.333.444-05",
+            "credit_score": 820,
+            "current_invoice_cents": 100000,
+            "credit_limit_cents": 1000000,
+            "late_payments": 0,
+            "monthly_spend_cents": [
+              100000,
+              110000,
+              90000
+            ]
+          }
+    response:
+      status: 200
+      statusText: "OK"
+      body:
+        type: json
+        data: |-
+          {
+            "decision_id": "fbd83d9e-c5aa-460f-b9b5-15fbf9106eeb",
+            "name": "Eva",
+            "cpf_masked": "222.***.***-05",
+            "decision": "APPROVED",
+            "revolving_amount_cents": 800000,
+            "reasons": [
+              "eligible"
+            ]
+          }

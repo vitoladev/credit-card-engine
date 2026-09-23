@@ -20,3 +20,25 @@ runtime:
       test("Malformed JSON: 400", function () {
         expect(res.body.error).to.equal("invalid_json");
       });
+examples:
+  - name: "400"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/evaluations"
+      headers:
+      - name: "content-type"
+        value: "application/json"
+      body:
+        type: json
+        data: |-
+          {"name":
+    response:
+      status: 400
+      statusText: "Bad Request"
+      body:
+        type: json
+        data: |-
+          {
+            "error": "invalid_json"
+          }

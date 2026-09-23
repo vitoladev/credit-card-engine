@@ -21,3 +21,22 @@ runtime:
       test("Invalid status: 400", function () {
         expect(res.body.error).to.equal("invalid_status");
       });
+examples:
+  - name: "400"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: GET
+      url: "{{baseUrl}}/batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?status=BOGUS"
+      params:
+      - name: "status"
+        value: "BOGUS"
+        type: query
+    response:
+      status: 400
+      statusText: "Bad Request"
+      body:
+        type: json
+        data: |-
+          {
+            "error": "invalid_status"
+          }

@@ -48,1074 +48,137 @@ Cursor or VS Code with the Dev Containers extension does the same stack:
 
 ### Call the API
 
-The request and response bodies below are from a live run of the Open
-Collection in [docs/requests](docs/requests) (`make requests`, 30/30).
-IDs change each run. Bruno opens the same folder. The list GETs on the
-first batch were recaptured after the worker decided those items.
-
-Inside the Dev Container the credentials are already set. Sign every
-route except `GET /health`:
+To send every use case from an HTTP client, open `docs/requests` in Bruno 3
+or later (**Open Collection** on that folder, not the repo root). Each request
+has an OpenCollection example with a live Floci request and response: expand
+the request in the sidebar. IDs change each run. The list of use cases is in
+[docs/requests/README.md](docs/requests/README.md).
 
 ```bash
 BASE="$(make -s api-url)"
-AUTH=(--aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY")
 curl -s "$BASE/health"
-curl -s "${AUTH[@]}" -X POST "$BASE/evaluations" \
-  -H 'content-type: application/json' --data '<request body>'
 ```
 
-On the host, `BASE` uses `localhost:4566` in place of `floci:4566`.
+`GET /health` returns `{"status":"ok"}`.
+
+Then evaluate Ana:
+
+```bash
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/evaluations" \
+  -H 'content-type: application/json' \
+  --data '{"name":"Ana","cpf":"390.533.447-05","credit_score":780,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000,90000,70000]}'
+```
+
+`POST /evaluations` returns `200` with a `decision_id`, the decision, and
+`revolving_amount_cents`. Ana is `APPROVED`. You may send a CPF masked or
+bare.
+
+To read the decision back:
+
+```bash
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  "$BASE/evaluations/<decision_id>"
+```
+
+An unknown id returns `404`. If the store cannot record the decision, the
+handler returns `503 {"error":"decision_not_recorded"}` and no decision.
+
+Malformed JSON returns `400`. An invalid customer returns `422` with every
+violation:
+
+```bash
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/evaluations" \
+  -H 'content-type: application/json' \
+  --data '{"name":"Ana","cpf":"39053344706","credit_score":-1,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000]}'
+# {"error":"invalid_customer","violations":[{"field":"cpf","code":"invalid_check_digits"},{"field":"credit_score","code":"negative"}]}
+```
+
+### Retry safely with an Idempotency-Key
+
+Send the same `Idempotency-Key` on a retry of either `POST /evaluations`
+route. The first `2xx` response comes back again, marked
+`idempotent-replayed: true`, and nothing is evaluated or stored twice:
+
+```bash
+KEY="$(uuidgen)"
+for i in 1 2; do
+  curl -si --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+    -X POST "$BASE/evaluations" -H 'content-type: application/json' -H "Idempotency-Key: $KEY" \
+    --data '{"name":"Ana","cpf":"390.533.447-05","credit_score":780,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000,90000,70000]}'
+done
+# The same decision_id twice; the second response has idempotent-replayed: true.
+```
+
+The same key with another body returns `422 {"error":"idempotency_key_reused"}`.
+Keys live 24 hours ([ADR 0005](docs/adr/0005-idempotency-key-claimed-with-a-conditional-write.md)).
+
+### Submit a batch
+
+```bash
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/evaluations/batch" \
+  -H 'content-type: application/json' \
+  --data-binary @apps/engine/testdata/customers.json
+```
+
+`POST /evaluations/batch` accepts at most `BATCH_SIZE` customers (default 100,
+max 1000) and returns `202` with `batch_id`, `queued`, and `item_ids`. The
+`item_ids` follow the order of the submitted customers. If any customer is
+invalid, the handler returns `422` with each violation's `index`. A larger
+batch returns `422 {"error":"batch_too_large","max":<BATCH_SIZE>}`. In both
+error cases nothing is stored or queued.
+
+A `BATCH_SIZE` outside 1..1000 fails the synth. To raise the cap, run
+`BATCH_SIZE=1000 make local-deploy`.
+
+The worker decides each batch item after the request returns. To list the items:
+
+```bash
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  "$BASE/batches/<batch_id>/items?limit=100"
+```
+
+Each item has its `item_id`, a masked CPF, its `status` (`QUEUED`,
+`APPROVED`, `DENIED`, `FAILED`, or `CANCELLED`), `reasons`,
+`revolving_amount_cents`, and `attempts`, in submission order. A batch has
+no status. `FAILED` is an item the DLQ consumer marked. When
+`?status=QUEUED` returns items, the worker has not decided them yet. When
+`?limit=1&status=QUEUED` returns no items, every item has left `QUEUED`.
+`?status=FAILED` lists items an operator retries or cancels. To read the
+next page, pass `next_cursor` as `?cursor=`. The last page has no
+`next_cursor`.
+
 With more than one query parameter, write them in alphabetical order
-(`cursor`, `limit`, `status`). The curl in the Dev Container (7.88)
-signs the query string in the order you type it, and SigV4 expects
-sorted keys, so any other order returns `403`. The AWS SDKs sort for you.
-
-A batch has no status. `FAILED` is an item the DLQ consumer marked.
-On a healthy stack, retry and cancel of a decided item return
-`409 invalid_transition`, and `retry-failed` returns `{"requeued":0}`.
-A `BATCH_SIZE` outside 1..1000 fails the synth. Default is 100, max 1000.
-
-#### Health
-
-**Health** (`docs/requests/health.yml`)
-
-```
-GET /health
-```
-
-`200`:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-#### One customer
-
-**Approved: Ana** (`docs/requests/1-single-evaluation/approved-ana.yml`)
-
-```
-POST /evaluations
-```
-
-Request:
-
-```json
-{
-  "name": "Ana",
-  "cpf": "390.533.447-05",
-  "credit_score": 780,
-  "current_invoice_cents": 50000,
-  "credit_limit_cents": 500000,
-  "late_payments": 0,
-  "monthly_spend_cents": [
-    80000,
-    90000,
-    70000
-  ]
-}
-```
-
-`200`:
-
-```json
-{
-  "decision_id": "d313417d-6f3e-4dbb-9568-1f3dd3e2fb74",
-  "name": "Ana",
-  "cpf_masked": "390.***.***-05",
-  "decision": "APPROVED",
-  "revolving_amount_cents": 250000,
-  "reasons": [
-    "eligible"
-  ]
-}
-```
-
-**Read the decision back** (`docs/requests/1-single-evaluation/read-the-decision-back.yml`)
-
-```
-GET /evaluations/d313417d-6f3e-4dbb-9568-1f3dd3e2fb74
-```
-
-`200`:
-
-```json
-{
-  "decision_id": "d313417d-6f3e-4dbb-9568-1f3dd3e2fb74",
-  "name": "Ana",
-  "cpf_masked": "390.***.***-05",
-  "decision": "APPROVED",
-  "revolving_amount_cents": 250000,
-  "reasons": [
-    "eligible"
-  ]
-}
-```
-
-**Denied: score below 600 (Bruno)** (`docs/requests/1-single-evaluation/denied-score-below-600-bruno.yml`)
-
-```
-POST /evaluations
-```
-
-Request:
-
-```json
-{
-  "name": "Bruno",
-  "cpf": "123.456.789-09",
-  "credit_score": 520,
-  "current_invoice_cents": 200000,
-  "credit_limit_cents": 400000,
-  "late_payments": 0,
-  "monthly_spend_cents": [
-    80000
-  ]
-}
-```
-
-`200`:
-
-```json
-{
-  "decision_id": "8ebd0ecd-2d7d-443e-97fe-34543a7dfb92",
-  "name": "Bruno",
-  "cpf_masked": "123.***.***-09",
-  "decision": "DENIED",
-  "revolving_amount_cents": 0,
-  "reasons": [
-    "score_below_600"
-  ]
-}
-```
-
-**Denied: more than 2 late payments (Diego)** (`docs/requests/1-single-evaluation/denied-more-than-2-late-payments-diego.yml`)
-
-```
-POST /evaluations
-```
-
-Request:
-
-```json
-{
-  "name": "Diego",
-  "cpf": "111.222.333-96",
-  "credit_score": 810,
-  "current_invoice_cents": 50000,
-  "credit_limit_cents": 1200000,
-  "late_payments": 3,
-  "monthly_spend_cents": [
-    200000,
-    180000,
-    190000
-  ]
-}
-```
-
-`200`:
-
-```json
-{
-  "decision_id": "be4acb75-0cfc-4bd6-9126-3c604430948c",
-  "name": "Diego",
-  "cpf_masked": "111.***.***-96",
-  "decision": "DENIED",
-  "revolving_amount_cents": 0,
-  "reasons": [
-    "late_payments_above_2"
-  ]
-}
-```
-
-**Denied: invoice over the credit limit (Carla)** (`docs/requests/1-single-evaluation/denied-invoice-over-the-credit-limit-carla.yml`)
-
-```
-POST /evaluations
-```
-
-Request:
-
-```json
-{
-  "name": "Carla",
-  "cpf": "987.654.321-00",
-  "credit_score": 690,
-  "current_invoice_cents": 900000,
-  "credit_limit_cents": 500000,
-  "late_payments": 1,
-  "monthly_spend_cents": [
-    100000,
-    120000,
-    110000
-  ]
-}
-```
-
-`200`:
-
-```json
-{
-  "decision_id": "faa6e70f-13ea-42cd-ae92-d571f2eda029",
-  "name": "Carla",
-  "cpf_masked": "987.***.***-00",
-  "decision": "DENIED",
-  "revolving_amount_cents": 0,
-  "reasons": [
-    "invoice_exceeds_credit_limit"
-  ]
-}
-```
-
-**Denied: no spend history (Helena)** (`docs/requests/1-single-evaluation/denied-no-spend-history-helena.yml`)
-
-```
-POST /evaluations
-```
-
-Request:
-
-```json
-{
-  "name": "Helena",
-  "cpf": "444.555.666-19",
-  "credit_score": 740,
-  "current_invoice_cents": 10000,
-  "credit_limit_cents": 300000,
-  "late_payments": 0,
-  "monthly_spend_cents": []
-}
-```
-
-`200`:
-
-```json
-{
-  "decision_id": "403baf03-6779-447f-bfcc-b2c902826e52",
-  "name": "Helena",
-  "cpf_masked": "444.***.***-19",
-  "decision": "DENIED",
-  "revolving_amount_cents": 0,
-  "reasons": [
-    "insufficient_spend_history"
-  ]
-}
-```
-
-**Denied: recent spend above 90% of the limit (Igor)** (`docs/requests/1-single-evaluation/denied-recent-spend-above-90-of-the-limit-igor.yml`)
-
-```
-POST /evaluations
-```
-
-Request:
-
-```json
-{
-  "name": "Igor",
-  "cpf": "555.666.777-20",
-  "credit_score": 710,
-  "current_invoice_cents": 10000,
-  "credit_limit_cents": 100000,
-  "late_payments": 0,
-  "monthly_spend_cents": [
-    95000,
-    96000,
-    97000
-  ]
-}
-```
-
-`200`:
-
-```json
-{
-  "decision_id": "c988259d-e55b-4cce-9d3c-152962ff37c1",
-  "name": "Igor",
-  "cpf_masked": "555.***.***-20",
-  "decision": "DENIED",
-  "revolving_amount_cents": 0,
-  "reasons": [
-    "recent_spend_above_share"
-  ]
-}
-```
-
-**Denied: no credit limit (Joana)** (`docs/requests/1-single-evaluation/denied-no-credit-limit-joana.yml`)
-
-```
-POST /evaluations
-```
-
-Request:
-
-```json
-{
-  "name": "Joana",
-  "cpf": "666.777.888-30",
-  "credit_score": 750,
-  "current_invoice_cents": 0,
-  "credit_limit_cents": 0,
-  "late_payments": 0,
-  "monthly_spend_cents": [
-    10000
-  ]
-}
-```
-
-`200`:
-
-```json
-{
-  "decision_id": "0aead90b-bc69-4937-94af-a4bb3467a413",
-  "name": "Joana",
-  "cpf_masked": "666.***.***-30",
-  "decision": "DENIED",
-  "revolving_amount_cents": 0,
-  "reasons": [
-    "no_credit_limit"
-  ]
-}
-```
-
-#### Idempotency-Key
-
-**Evaluate with a new key** (`docs/requests/2-idempotency-key/evaluate-with-a-new-key.yml`)
-
-```
-POST /evaluations
-Idempotency-Key: eb9060ab-c793-48a4-9fe2-ea39fa3c8c4e
-```
-
-Request:
-
-```json
-{
-  "name": "Eva",
-  "cpf": "222.333.444-05",
-  "credit_score": 820,
-  "current_invoice_cents": 100000,
-  "credit_limit_cents": 1000000,
-  "late_payments": 0,
-  "monthly_spend_cents": [
-    100000,
-    110000,
-    90000
-  ]
-}
-```
-
-`200`:
-
-```json
-{
-  "decision_id": "fbd83d9e-c5aa-460f-b9b5-15fbf9106eeb",
-  "name": "Eva",
-  "cpf_masked": "222.***.***-05",
-  "decision": "APPROVED",
-  "revolving_amount_cents": 800000,
-  "reasons": [
-    "eligible"
-  ]
-}
-```
-
-**Replay: same key, same body** (`docs/requests/2-idempotency-key/replay-same-key-same-body.yml`)
-
-```
-POST /evaluations
-Idempotency-Key: eb9060ab-c793-48a4-9fe2-ea39fa3c8c4e
-```
-
-Request:
-
-```json
-{
-  "name": "Eva",
-  "cpf": "222.333.444-05",
-  "credit_score": 820,
-  "current_invoice_cents": 100000,
-  "credit_limit_cents": 1000000,
-  "late_payments": 0,
-  "monthly_spend_cents": [
-    100000,
-    110000,
-    90000
-  ]
-}
-```
-
-`200`, header `idempotent-replayed: true`:
-
-```json
-{
-  "decision_id": "fbd83d9e-c5aa-460f-b9b5-15fbf9106eeb",
-  "name": "Eva",
-  "cpf_masked": "222.***.***-05",
-  "decision": "APPROVED",
-  "revolving_amount_cents": 800000,
-  "reasons": [
-    "eligible"
-  ]
-}
-```
-
-**Same key, another body: 422** (`docs/requests/2-idempotency-key/same-key-another-body-422.yml`)
-
-```
-POST /evaluations
-Idempotency-Key: eb9060ab-c793-48a4-9fe2-ea39fa3c8c4e
-```
-
-Request:
-
-```json
-{
-  "name": "Ana",
-  "cpf": "390.533.447-05",
-  "credit_score": 780,
-  "current_invoice_cents": 50000,
-  "credit_limit_cents": 500000,
-  "late_payments": 0,
-  "monthly_spend_cents": [
-    80000,
-    90000,
-    70000
-  ]
-}
-```
-
-`422`:
-
-```json
-{
-  "error": "idempotency_key_reused"
-}
-```
-
-**Invalid key: 400** (`docs/requests/2-idempotency-key/invalid-key-400.yml`)
-
-```
-POST /evaluations
-Idempotency-Key: has space
-```
-
-Request:
-
-```json
-{
-  "name": "Ana",
-  "cpf": "390.533.447-05",
-  "credit_score": 780,
-  "current_invoice_cents": 50000,
-  "credit_limit_cents": 500000,
-  "late_payments": 0,
-  "monthly_spend_cents": [
-    80000,
-    90000,
-    70000
-  ]
-}
-```
-
-`400`:
-
-```json
-{
-  "error": "invalid_idempotency_key",
-  "max_length": 255
-}
-```
-
-#### Batch
-
-**Submit a batch** (`docs/requests/3-batch/submit-a-batch.yml`)
-
-```
-POST /evaluations/batch
-```
-
-Request:
-
-```json
-[
-  {
-    "name": "Ana",
-    "cpf": "390.533.447-05",
-    "credit_score": 780,
-    "current_invoice_cents": 50000,
-    "credit_limit_cents": 500000,
-    "late_payments": 0,
-    "monthly_spend_cents": [
-      80000,
-      90000,
-      70000
-    ]
-  },
-  {
-    "name": "Bruno",
-    "cpf": "123.456.789-09",
-    "credit_score": 520,
-    "current_invoice_cents": 200000,
-    "credit_limit_cents": 400000,
-    "late_payments": 0,
-    "monthly_spend_cents": [
-      80000
-    ]
-  },
-  {
-    "name": "Carla",
-    "cpf": "987.654.321-00",
-    "credit_score": 690,
-    "current_invoice_cents": 900000,
-    "credit_limit_cents": 500000,
-    "late_payments": 1,
-    "monthly_spend_cents": [
-      100000,
-      120000,
-      110000
-    ]
-  },
-  {
-    "name": "Diego",
-    "cpf": "111.222.333-96",
-    "credit_score": 810,
-    "current_invoice_cents": 50000,
-    "credit_limit_cents": 1200000,
-    "late_payments": 3,
-    "monthly_spend_cents": [
-      200000,
-      180000,
-      190000
-    ]
-  }
-]
-```
-
-`202`:
-
-```json
-{
-  "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
-  "queued": 4,
-  "item_ids": [
-    "01a0cf75-997b-73f8-9893-ada9e6ad902a",
-    "01a0cf75-997b-73fb-b8fc-cfa964b754ed",
-    "01a0cf75-997b-73fc-91ec-71f6f128fa1b",
-    "01a0cf75-997b-73fe-b60f-5e53399c0a64"
-  ]
-}
-```
-
-**Submit a batch with an Idempotency-Key** (`docs/requests/3-batch/submit-a-batch-with-an-idempotency-key.yml`)
-
-```
-POST /evaluations/batch
-Idempotency-Key: cc824d10-214c-4b9b-bab8-142a7f2d11ae
-```
-
-Request:
-
-```json
-[
-  {
-    "name": "Ana",
-    "cpf": "390.533.447-05",
-    "credit_score": 780,
-    "current_invoice_cents": 50000,
-    "credit_limit_cents": 500000,
-    "late_payments": 0,
-    "monthly_spend_cents": [
-      80000,
-      90000,
-      70000
-    ]
-  },
-  {
-    "name": "Bruno",
-    "cpf": "123.456.789-09",
-    "credit_score": 520,
-    "current_invoice_cents": 200000,
-    "credit_limit_cents": 400000,
-    "late_payments": 0,
-    "monthly_spend_cents": [
-      80000
-    ]
-  },
-  {
-    "name": "Carla",
-    "cpf": "987.654.321-00",
-    "credit_score": 690,
-    "current_invoice_cents": 900000,
-    "credit_limit_cents": 500000,
-    "late_payments": 1,
-    "monthly_spend_cents": [
-      100000,
-      120000,
-      110000
-    ]
-  },
-  {
-    "name": "Diego",
-    "cpf": "111.222.333-96",
-    "credit_score": 810,
-    "current_invoice_cents": 50000,
-    "credit_limit_cents": 1200000,
-    "late_payments": 3,
-    "monthly_spend_cents": [
-      200000,
-      180000,
-      190000
-    ]
-  }
-]
-```
-
-`202`:
-
-```json
-{
-  "batch_id": "d9f90ea7-51fb-497b-8306-d136b92f5ca7",
-  "queued": 4,
-  "item_ids": [
-    "01a0cf75-9a8a-7ccf-b612-5f0cb5028c51",
-    "01a0cf75-9a8a-7cd3-ba23-181ff8e92e3d",
-    "01a0cf75-9a8a-7cd5-be32-f42547bcfafc",
-    "01a0cf75-9a8a-7cd7-a1fe-9587e1c19b2c"
-  ]
-}
-```
-
-**List every item** (`docs/requests/3-batch/list-every-item.yml`)
-
-```
-GET /batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items
-```
-
-`200`:
-
-```json
-{
-  "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
-  "items": [
-    {
-      "item_id": "01a0cf75-997b-73f8-9893-ada9e6ad902a",
-      "name": "Ana",
-      "cpf_masked": "390.***.***-05",
-      "status": "APPROVED",
-      "reasons": [
-        "eligible"
-      ],
-      "revolving_amount_cents": 250000,
-      "attempts": 1
-    },
-    {
-      "item_id": "01a0cf75-997b-73fb-b8fc-cfa964b754ed",
-      "name": "Bruno",
-      "cpf_masked": "123.***.***-09",
-      "status": "DENIED",
-      "reasons": [
-        "score_below_600"
-      ],
-      "revolving_amount_cents": 0,
-      "attempts": 1
-    },
-    {
-      "item_id": "01a0cf75-997b-73fc-91ec-71f6f128fa1b",
-      "name": "Carla",
-      "cpf_masked": "987.***.***-00",
-      "status": "DENIED",
-      "reasons": [
-        "invoice_exceeds_credit_limit"
-      ],
-      "revolving_amount_cents": 0,
-      "attempts": 1
-    },
-    {
-      "item_id": "01a0cf75-997b-73fe-b60f-5e53399c0a64",
-      "name": "Diego",
-      "cpf_masked": "111.***.***-96",
-      "status": "DENIED",
-      "reasons": [
-        "late_payments_above_2"
-      ],
-      "revolving_amount_cents": 0,
-      "attempts": 1
-    }
-  ]
-}
-```
-
-**List a page of 2** (`docs/requests/3-batch/list-a-page-of-2.yml`)
-
-```
-GET /batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?limit=2
-```
-
-`200`:
-
-```json
-{
-  "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
-  "items": [
-    {
-      "item_id": "01a0cf75-997b-73f8-9893-ada9e6ad902a",
-      "name": "Ana",
-      "cpf_masked": "390.***.***-05",
-      "status": "APPROVED",
-      "reasons": [
-        "eligible"
-      ],
-      "revolving_amount_cents": 250000,
-      "attempts": 1
-    },
-    {
-      "item_id": "01a0cf75-997b-73fb-b8fc-cfa964b754ed",
-      "name": "Bruno",
-      "cpf_masked": "123.***.***-09",
-      "status": "DENIED",
-      "reasons": [
-        "score_below_600"
-      ],
-      "revolving_amount_cents": 0,
-      "attempts": 1
-    }
-  ],
-  "next_cursor": "MDFhMGNmNzUtOTk3Yi03M2ZiLWI4ZmMtY2ZhOTY0Yjc1NGVk"
-}
-```
-
-**Next page** (`docs/requests/3-batch/next-page.yml`)
-
-```
-GET /batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?cursor=MDFhMGNmNzUtOTk3Yi03M2ZiLWI4ZmMtY2ZhOTY0Yjc1NGVk&limit=2
-```
-
-`200`:
-
-```json
-{
-  "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
-  "items": [
-    {
-      "item_id": "01a0cf75-997b-73fc-91ec-71f6f128fa1b",
-      "name": "Carla",
-      "cpf_masked": "987.***.***-00",
-      "status": "DENIED",
-      "reasons": [
-        "invoice_exceeds_credit_limit"
-      ],
-      "revolving_amount_cents": 0,
-      "attempts": 1
-    },
-    {
-      "item_id": "01a0cf75-997b-73fe-b60f-5e53399c0a64",
-      "name": "Diego",
-      "cpf_masked": "111.***.***-96",
-      "status": "DENIED",
-      "reasons": [
-        "late_payments_above_2"
-      ],
-      "revolving_amount_cents": 0,
-      "attempts": 1
-    }
-  ]
-}
-```
-
-**Only the denied items** (`docs/requests/3-batch/only-the-denied-items.yml`)
-
-```
-GET /batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?status=DENIED
-```
-
-`200`:
-
-```json
-{
-  "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
-  "items": [
-    {
-      "item_id": "01a0cf75-997b-73fb-b8fc-cfa964b754ed",
-      "name": "Bruno",
-      "cpf_masked": "123.***.***-09",
-      "status": "DENIED",
-      "reasons": [
-        "score_below_600"
-      ],
-      "revolving_amount_cents": 0,
-      "attempts": 1
-    },
-    {
-      "item_id": "01a0cf75-997b-73fc-91ec-71f6f128fa1b",
-      "name": "Carla",
-      "cpf_masked": "987.***.***-00",
-      "status": "DENIED",
-      "reasons": [
-        "invoice_exceeds_credit_limit"
-      ],
-      "revolving_amount_cents": 0,
-      "attempts": 1
-    },
-    {
-      "item_id": "01a0cf75-997b-73fe-b60f-5e53399c0a64",
-      "name": "Diego",
-      "cpf_masked": "111.***.***-96",
-      "status": "DENIED",
-      "reasons": [
-        "late_payments_above_2"
-      ],
-      "revolving_amount_cents": 0,
-      "attempts": 1
-    }
-  ]
-}
-```
-
-**Only the approved items** (`docs/requests/3-batch/only-the-approved-items.yml`)
-
-```
-GET /batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?status=APPROVED
-```
-
-`200`:
-
-```json
-{
-  "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
-  "items": [
-    {
-      "item_id": "01a0cf75-997b-73f8-9893-ada9e6ad902a",
-      "name": "Ana",
-      "cpf_masked": "390.***.***-05",
-      "status": "APPROVED",
-      "reasons": [
-        "eligible"
-      ],
-      "revolving_amount_cents": 250000,
-      "attempts": 1
-    }
-  ]
-}
-```
-
-**Is the batch done?** (`docs/requests/3-batch/is-the-batch-done.yml`)
-
-```
-GET /batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?limit=1&status=QUEUED
-```
-
-`200`:
-
-```json
-{
-  "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
-  "items": []
-}
-```
-
-**Invalid status: 400** (`docs/requests/3-batch/invalid-status-400.yml`)
-
-```
-GET /batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?status=BOGUS
-```
-
-`400`:
-
-```json
-{
-  "error": "invalid_status"
-}
-```
-
-**Unknown batch: 404** (`docs/requests/3-batch/unknown-batch-404.yml`)
-
-```
-GET /batches/00000000-0000-0000-0000-000000000000/items
-```
-
-`404`:
-
-```json
-{
-  "error": "not_found"
-}
-```
-
-#### Recover a failed item
-
-**Retry a decided item: 409** (`docs/requests/4-recovery/retry-a-decided-item-409.yml`)
-
-```
-POST /batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items/01a0cf75-997b-73f8-9893-ada9e6ad902a/retry
-```
-
-`409`:
-
-```json
-{
-  "error": "invalid_transition"
-}
-```
-
-**Cancel a decided item: 409** (`docs/requests/4-recovery/cancel-a-decided-item-409.yml`)
-
-```
-POST /batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items/01a0cf75-997b-73f8-9893-ada9e6ad902a/cancel
-```
-
-`409`:
-
-```json
-{
-  "error": "invalid_transition"
-}
-```
-
-**Retry every failed item** (`docs/requests/4-recovery/retry-every-failed-item.yml`)
-
-```
-POST /batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/retry-failed
-```
-
-`202`:
-
-```json
-{
-  "requeued": 0
-}
-```
-
-#### Errors
-
-**Invalid customer: 422** (`docs/requests/5-errors/invalid-customer-422.yml`)
-
-```
-POST /evaluations
-```
-
-Request:
-
-```json
-{
-  "name": "Ana",
-  "cpf": "390.533.447-06",
-  "credit_score": -1,
-  "current_invoice_cents": 50000,
-  "credit_limit_cents": 500000,
-  "late_payments": 0,
-  "monthly_spend_cents": [
-    80000,
-    90000,
-    70000
-  ]
-}
-```
-
-`422`:
-
-```json
-{
-  "error": "invalid_customer",
-  "violations": [
-    {
-      "field": "cpf",
-      "code": "invalid_check_digits"
-    },
-    {
-      "field": "credit_score",
-      "code": "negative"
-    }
-  ]
-}
-```
-
-**Malformed JSON: 400** (`docs/requests/5-errors/malformed-json-400.yml`)
-
-```
-POST /evaluations
-```
-
-Request:
-
-```
-{"name":
-```
-
-`400`:
-
-```json
-{
-  "error": "invalid_json"
-}
-```
-
-**Unknown decision: 404** (`docs/requests/5-errors/unknown-decision-404.yml`)
-
-```
-GET /evaluations/00000000-0000-0000-0000-000000000000
-```
-
-`404`:
-
-```json
-{
-  "error": "not_found"
-}
-```
-
-**Batch with an invalid customer: 422** (`docs/requests/5-errors/batch-with-an-invalid-customer-422.yml`)
-
-```
-POST /evaluations/batch
-```
-
-Request:
-
-```json
-[
-  {
-    "name": "Ana",
-    "cpf": "390.533.447-05",
-    "credit_score": 780,
-    "current_invoice_cents": 50000,
-    "credit_limit_cents": 500000,
-    "late_payments": 0,
-    "monthly_spend_cents": [
-      80000,
-      90000,
-      70000
-    ]
-  },
-  {
-    "name": "Bruno",
-    "cpf": "123",
-    "credit_score": 520,
-    "current_invoice_cents": 200000,
-    "credit_limit_cents": 400000,
-    "late_payments": 0,
-    "monthly_spend_cents": [
-      80000
-    ]
-  }
-]
-```
-
-`422`:
-
-```json
-{
-  "error": "invalid_customer",
-  "violations": [
-    {
-      "index": 1,
-      "field": "cpf",
-      "code": "invalid_length"
-    }
-  ]
-}
-```
+(`cursor`, `limit`, `status`). The curl in the Dev Container (7.88) signs the
+query string in the order you type it, and SigV4 expects sorted keys, so any
+other order returns `403`. The AWS SDKs sort for you.
+
+Bruno (score 520), Carla (invoice over the credit limit), and Diego (3 late
+payments) are `DENIED`.
+
+### Recover a failed item
+
+A batch item that still fails after 5 deliveries lands in the DLQ. The DLQ
+consumer marks it `FAILED`. An operator then retries or cancels it, at most
+5 attempts per item:
+
+```bash
+# Retry one failed item: 202 {"attempts":2,"item_id":"<item_id>"}
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/batches/<batch_id>/items/<item_id>/retry"
+# Retry every failed item under 5 attempts: 202 {"requeued":<n>}
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/batches/<batch_id>/retry-failed"
+# Cancel one failed item: 200 {"item_id":"<item_id>","status":"CANCELLED"}, again 200
+curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  -X POST "$BASE/batches/<batch_id>/items/<item_id>/cancel"
+```
+
+A retry or cancel of an item that is not `FAILED` returns
+`409 {"error":"invalid_transition"}`. A retry at 5 attempts returns
+`409 {"error":"max_attempts_reached"}`.
 
 The URL Floci serves is:
 

@@ -18,4 +18,48 @@ runtime:
   scripts:
   - type: after-response
     code: bru.setVar("cursor", res.body.next_cursor || "");
+examples:
+  - name: "200"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: GET
+      url: "{{baseUrl}}/batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?limit=2"
+      params:
+      - name: "limit"
+        value: "2"
+        type: query
+    response:
+      status: 200
+      statusText: "OK"
+      body:
+        type: json
+        data: |-
+          {
+            "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
+            "items": [
+              {
+                "item_id": "01a0cf75-997b-73f8-9893-ada9e6ad902a",
+                "name": "Ana",
+                "cpf_masked": "390.***.***-05",
+                "status": "APPROVED",
+                "reasons": [
+                  "eligible"
+                ],
+                "revolving_amount_cents": 250000,
+                "attempts": 1
+              },
+              {
+                "item_id": "01a0cf75-997b-73fb-b8fc-cfa964b754ed",
+                "name": "Bruno",
+                "cpf_masked": "123.***.***-09",
+                "status": "DENIED",
+                "reasons": [
+                  "score_below_600"
+                ],
+                "revolving_amount_cents": 0,
+                "attempts": 1
+              }
+            ],
+            "next_cursor": "MDFhMGNmNzUtOTk3Yi03M2ZiLWI4ZmMtY2ZhOTY0Yjc1NGVk"
+          }
 docs: Saves next_cursor for the next request. The last page has no next_cursor.

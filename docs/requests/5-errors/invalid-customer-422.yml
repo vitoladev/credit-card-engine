@@ -33,4 +33,48 @@ runtime:
       test("Invalid customer: 422", function () {
         expect(res.body.error).to.equal("invalid_customer");
       });
+examples:
+  - name: "422"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/evaluations"
+      headers:
+      - name: "content-type"
+        value: "application/json"
+      body:
+        type: json
+        data: |-
+          {
+            "name": "Ana",
+            "cpf": "390.533.447-06",
+            "credit_score": -1,
+            "current_invoice_cents": 50000,
+            "credit_limit_cents": 500000,
+            "late_payments": 0,
+            "monthly_spend_cents": [
+              80000,
+              90000,
+              70000
+            ]
+          }
+    response:
+      status: 422
+      statusText: "Unprocessable Entity"
+      body:
+        type: json
+        data: |-
+          {
+            "error": "invalid_customer",
+            "violations": [
+              {
+                "field": "cpf",
+                "code": "invalid_check_digits"
+              },
+              {
+                "field": "credit_score",
+                "code": "negative"
+              }
+            ]
+          }
 docs: 'Every violation comes back at once: wrong CPF check digits and a negative score.'

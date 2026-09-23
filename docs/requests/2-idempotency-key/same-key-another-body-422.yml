@@ -36,3 +36,39 @@ runtime:
       test("Same key, another body: 422", function () {
         expect(res.body.error).to.equal("idempotency_key_reused");
       });
+examples:
+  - name: "422"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/evaluations"
+      headers:
+      - name: "Idempotency-Key"
+        value: "eb9060ab-c793-48a4-9fe2-ea39fa3c8c4e"
+      - name: "content-type"
+        value: "application/json"
+      body:
+        type: json
+        data: |-
+          {
+            "name": "Ana",
+            "cpf": "390.533.447-05",
+            "credit_score": 780,
+            "current_invoice_cents": 50000,
+            "credit_limit_cents": 500000,
+            "late_payments": 0,
+            "monthly_spend_cents": [
+              80000,
+              90000,
+              70000
+            ]
+          }
+    response:
+      status: 422
+      statusText: "Unprocessable Entity"
+      body:
+        type: json
+        data: |-
+          {
+            "error": "idempotency_key_reused"
+          }

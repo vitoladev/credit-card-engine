@@ -17,4 +17,19 @@ runtime:
       test("Retry a decided item: 409", function () {
         expect(res.body.error).to.equal("invalid_transition");
       });
+examples:
+  - name: "409"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items/01a0cf75-997b-73f8-9893-ada9e6ad902a/retry"
+    response:
+      status: 409
+      statusText: "Conflict"
+      body:
+        type: json
+        data: |-
+          {
+            "error": "invalid_transition"
+          }
 docs: On a FAILED item this returns 202 {attempts, item_id}.

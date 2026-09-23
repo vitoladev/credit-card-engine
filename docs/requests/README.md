@@ -17,6 +17,11 @@ opens it as a collection, and `make requests` runs it from the terminal.
    in a variable (`decisionId`, `batchId`, `itemId`, `cursor`,
    `idempotencyKey`), and the requests after it use that variable.
 
+Each request has an OpenCollection example with a live Floci request and
+response. In Bruno, expand the request in the sidebar to see it. IDs change
+each run. The list GETs on the first batch were recaptured after the worker
+decided those items.
+
 Every request inherits AWS Signature Version 4 auth from the collection
 (`execute-api`, `us-east-1`). On Floci the keys are `test` and `test`. For a
 stack on AWS, pick the **aws** environment and fill in `baseUrl` and your

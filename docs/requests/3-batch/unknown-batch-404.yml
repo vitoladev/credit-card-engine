@@ -11,3 +11,18 @@ runtime:
   - expression: res.status
     operator: eq
     value: '404'
+examples:
+  - name: "404"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: GET
+      url: "{{baseUrl}}/batches/00000000-0000-0000-0000-000000000000/items"
+    response:
+      status: 404
+      statusText: "Not Found"
+      body:
+        type: json
+        data: |-
+          {
+            "error": "not_found"
+          }

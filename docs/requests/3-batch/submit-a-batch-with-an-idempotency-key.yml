@@ -76,4 +76,86 @@ runtime:
         const { v4: uuidv4 } = require("uuid");
         bru.setVar("batchKey", uuidv4());
       }
+examples:
+  - name: "202"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/evaluations/batch"
+      headers:
+      - name: "Idempotency-Key"
+        value: "cc824d10-214c-4b9b-bab8-142a7f2d11ae"
+      - name: "content-type"
+        value: "application/json"
+      body:
+        type: json
+        data: |-
+          [
+            {
+              "name": "Ana",
+              "cpf": "390.533.447-05",
+              "credit_score": 780,
+              "current_invoice_cents": 50000,
+              "credit_limit_cents": 500000,
+              "late_payments": 0,
+              "monthly_spend_cents": [
+                80000,
+                90000,
+                70000
+              ]
+            },
+            {
+              "name": "Bruno",
+              "cpf": "123.456.789-09",
+              "credit_score": 520,
+              "current_invoice_cents": 200000,
+              "credit_limit_cents": 400000,
+              "late_payments": 0,
+              "monthly_spend_cents": [
+                80000
+              ]
+            },
+            {
+              "name": "Carla",
+              "cpf": "987.654.321-00",
+              "credit_score": 690,
+              "current_invoice_cents": 900000,
+              "credit_limit_cents": 500000,
+              "late_payments": 1,
+              "monthly_spend_cents": [
+                100000,
+                120000,
+                110000
+              ]
+            },
+            {
+              "name": "Diego",
+              "cpf": "111.222.333-96",
+              "credit_score": 810,
+              "current_invoice_cents": 50000,
+              "credit_limit_cents": 1200000,
+              "late_payments": 3,
+              "monthly_spend_cents": [
+                200000,
+                180000,
+                190000
+              ]
+            }
+          ]
+    response:
+      status: 202
+      statusText: "Accepted"
+      body:
+        type: json
+        data: |-
+          {
+            "batch_id": "d9f90ea7-51fb-497b-8306-d136b92f5ca7",
+            "queued": 4,
+            "item_ids": [
+              "01a0cf75-9a8a-7ccf-b612-5f0cb5028c51",
+              "01a0cf75-9a8a-7cd3-ba23-181ff8e92e3d",
+              "01a0cf75-9a8a-7cd5-be32-f42547bcfafc",
+              "01a0cf75-9a8a-7cd7-a1fe-9587e1c19b2c"
+            ]
+          }
 docs: 'Send it twice: the second call returns the same batch_id with idempotent-replayed: true.'

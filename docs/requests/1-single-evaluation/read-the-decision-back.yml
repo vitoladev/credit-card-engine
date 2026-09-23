@@ -17,4 +17,26 @@ runtime:
       test("Read the decision back", function () {
         expect(res.body.decision_id).to.equal(bru.getVar("decisionId"));
       });
+examples:
+  - name: "200"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: GET
+      url: "{{baseUrl}}/evaluations/d313417d-6f3e-4dbb-9568-1f3dd3e2fb74"
+    response:
+      status: 200
+      statusText: "OK"
+      body:
+        type: json
+        data: |-
+          {
+            "decision_id": "d313417d-6f3e-4dbb-9568-1f3dd3e2fb74",
+            "name": "Ana",
+            "cpf_masked": "390.***.***-05",
+            "decision": "APPROVED",
+            "revolving_amount_cents": 250000,
+            "reasons": [
+              "eligible"
+            ]
+          }
 docs: 'Returns the same body as the POST. Run "Approved: Ana" first: it saves decisionId.'

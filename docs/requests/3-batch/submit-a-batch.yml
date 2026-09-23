@@ -76,4 +76,84 @@ runtime:
     code: |-
       bru.setVar("batchId", res.body.batch_id);
       bru.setVar("itemId", res.body.item_ids[0]);
+examples:
+  - name: "202"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/evaluations/batch"
+      headers:
+      - name: "content-type"
+        value: "application/json"
+      body:
+        type: json
+        data: |-
+          [
+            {
+              "name": "Ana",
+              "cpf": "390.533.447-05",
+              "credit_score": 780,
+              "current_invoice_cents": 50000,
+              "credit_limit_cents": 500000,
+              "late_payments": 0,
+              "monthly_spend_cents": [
+                80000,
+                90000,
+                70000
+              ]
+            },
+            {
+              "name": "Bruno",
+              "cpf": "123.456.789-09",
+              "credit_score": 520,
+              "current_invoice_cents": 200000,
+              "credit_limit_cents": 400000,
+              "late_payments": 0,
+              "monthly_spend_cents": [
+                80000
+              ]
+            },
+            {
+              "name": "Carla",
+              "cpf": "987.654.321-00",
+              "credit_score": 690,
+              "current_invoice_cents": 900000,
+              "credit_limit_cents": 500000,
+              "late_payments": 1,
+              "monthly_spend_cents": [
+                100000,
+                120000,
+                110000
+              ]
+            },
+            {
+              "name": "Diego",
+              "cpf": "111.222.333-96",
+              "credit_score": 810,
+              "current_invoice_cents": 50000,
+              "credit_limit_cents": 1200000,
+              "late_payments": 3,
+              "monthly_spend_cents": [
+                200000,
+                180000,
+                190000
+              ]
+            }
+          ]
+    response:
+      status: 202
+      statusText: "Accepted"
+      body:
+        type: json
+        data: |-
+          {
+            "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
+            "queued": 4,
+            "item_ids": [
+              "01a0cf75-997b-73f8-9893-ada9e6ad902a",
+              "01a0cf75-997b-73fb-b8fc-cfa964b754ed",
+              "01a0cf75-997b-73fc-91ec-71f6f128fa1b",
+              "01a0cf75-997b-73fe-b60f-5e53399c0a64"
+            ]
+          }
 docs: Ana is approved; Bruno, Carla, and Diego are denied. item_ids follow the order of the customers.

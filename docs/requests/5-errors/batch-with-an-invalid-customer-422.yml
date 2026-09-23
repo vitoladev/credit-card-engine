@@ -46,4 +46,58 @@ runtime:
       test("Batch with an invalid customer: 422", function () {
         expect(res.body.violations[0].index).to.equal(1);
       });
+examples:
+  - name: "422"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/evaluations/batch"
+      headers:
+      - name: "content-type"
+        value: "application/json"
+      body:
+        type: json
+        data: |-
+          [
+            {
+              "name": "Ana",
+              "cpf": "390.533.447-05",
+              "credit_score": 780,
+              "current_invoice_cents": 50000,
+              "credit_limit_cents": 500000,
+              "late_payments": 0,
+              "monthly_spend_cents": [
+                80000,
+                90000,
+                70000
+              ]
+            },
+            {
+              "name": "Bruno",
+              "cpf": "123",
+              "credit_score": 520,
+              "current_invoice_cents": 200000,
+              "credit_limit_cents": 400000,
+              "late_payments": 0,
+              "monthly_spend_cents": [
+                80000
+              ]
+            }
+          ]
+    response:
+      status: 422
+      statusText: "Unprocessable Entity"
+      body:
+        type: json
+        data: |-
+          {
+            "error": "invalid_customer",
+            "violations": [
+              {
+                "index": 1,
+                "field": "cpf",
+                "code": "invalid_length"
+              }
+            ]
+          }
 docs: The whole batch is rejected and nothing is stored. Each violation carries the customer's index.

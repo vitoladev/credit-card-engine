@@ -17,4 +17,19 @@ runtime:
       test("Health", function () {
         expect(res.body.status).to.equal("ok");
       });
+examples:
+  - name: "200"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: GET
+      url: "{{baseUrl}}/health"
+    response:
+      status: 200
+      statusText: "OK"
+      body:
+        type: json
+        data: |-
+          {
+            "status": "ok"
+          }
 docs: The only route without IAM auth.

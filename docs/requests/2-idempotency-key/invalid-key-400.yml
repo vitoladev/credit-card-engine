@@ -36,3 +36,40 @@ runtime:
       test("Invalid key: 400", function () {
         expect(res.body.error).to.equal("invalid_idempotency_key");
       });
+examples:
+  - name: "400"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/evaluations"
+      headers:
+      - name: "Idempotency-Key"
+        value: "has space"
+      - name: "content-type"
+        value: "application/json"
+      body:
+        type: json
+        data: |-
+          {
+            "name": "Ana",
+            "cpf": "390.533.447-05",
+            "credit_score": 780,
+            "current_invoice_cents": 50000,
+            "credit_limit_cents": 500000,
+            "late_payments": 0,
+            "monthly_spend_cents": [
+              80000,
+              90000,
+              70000
+            ]
+          }
+    response:
+      status: 400
+      statusText: "Bad Request"
+      body:
+        type: json
+        data: |-
+          {
+            "error": "invalid_idempotency_key",
+            "max_length": 255
+          }

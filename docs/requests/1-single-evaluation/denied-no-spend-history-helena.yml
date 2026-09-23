@@ -29,3 +29,40 @@ runtime:
       test("Denied: no spend history (Helena)", function () {
         expect(res.body.reasons[0]).to.equal("insufficient_spend_history");
       });
+examples:
+  - name: "200"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      method: POST
+      url: "{{baseUrl}}/evaluations"
+      headers:
+      - name: "content-type"
+        value: "application/json"
+      body:
+        type: json
+        data: |-
+          {
+            "name": "Helena",
+            "cpf": "444.555.666-19",
+            "credit_score": 740,
+            "current_invoice_cents": 10000,
+            "credit_limit_cents": 300000,
+            "late_payments": 0,
+            "monthly_spend_cents": []
+          }
+    response:
+      status: 200
+      statusText: "OK"
+      body:
+        type: json
+        data: |-
+          {
+            "decision_id": "403baf03-6779-447f-bfcc-b2c902826e52",
+            "name": "Helena",
+            "cpf_masked": "444.***.***-19",
+            "decision": "DENIED",
+            "revolving_amount_cents": 0,
+            "reasons": [
+              "insufficient_spend_history"
+            ]
+          }
