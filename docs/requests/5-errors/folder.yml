@@ -2,4 +2,8 @@ info:
   name: 5. Errors
   type: folder
   seq: 6
+
+request:
+  auth: inherit
+
 docs: Validation and lookup errors on the evaluation routes.

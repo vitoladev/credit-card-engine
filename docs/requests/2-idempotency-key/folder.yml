@@ -2,6 +2,10 @@ info:
   name: 2. Idempotency-Key
   type: folder
   seq: 3
+
+request:
+  auth: inherit
+
 docs: 'Both POST /evaluations routes take an optional Idempotency-Key header (ADR 0005). Run the three
   requests in order: the first picks a new key and evaluates, the second replays the same response, the
   third reuses the key with another body.'

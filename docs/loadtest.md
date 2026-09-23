@@ -7,52 +7,37 @@ runs show.
 
 - Floci serves about 10 Lambda invocations a second across the whole stack.
   A local run reaches 5 to 13 req/s, whatever rate k6 asks for. The numbers
-  measure the emulator, not the engine.
-- Under that load, no batch item was lost or left `QUEUED`: every item was
-  decided and none failed. The errors were Lambda timeouts inside Floci.
-- The runs found one engine bug: a batch written by an invocation that timed
-  out stayed behind. `Create` now stops writing a second before the deadline,
-  so it can still delete what it wrote.
+  measure Floci.
+- `POST /evaluations` at 60 s reaches 13.1 req/s, with 2.0% errors and p95
+  1.12 s. The batch of 3 to 5 customers at 60 s reaches 6.8 req/s, with 7.7%
+  errors and p95 5.31 s. That batch decides 1,563 items. The queue then
+  drains in 268 s, about 5 items a second.
+- Every error is a 3 s Lambda timeout inside Floci.
 
 ## Results on Floci, 60 seconds per scenario
 
-Each scenario ran for 60 s at a target of 100 req/s, then waited until no item
-was `QUEUED`. The runs were on 2026-09-23, with Floci 2.1.0 on the colima
-`development` profile (6 CPUs, 12 GB), the HTTP Lambda capped at 8 concurrent
-invocations, and k6 at 8 VUs.
+Each scenario runs for 60 s at a target of 100 req/s, then waits until the
+`QUEUED` count reaches 0. These figures are from 2026-09-23, with Floci 2.1.0
+on the colima `development` profile (6 CPUs, 12 GB), the HTTP Lambda capped
+at 8 concurrent invocations, and k6 at 8 VUs.
 
 | Scenario | Reached | Errors | Median | p95 | Items | Drain after the load |
 |---|---|---|---|---|---|---|
-| `POST /evaluations`, 1 customer | 13.1 req/s (819) | 2.9% (24) | 428 ms | 1.05 s | — | — |
-| Batch, 3 to 5 customers | 8.8 req/s (544) | 1.5% (8) | 652 ms | 1.75 s | 2,143, all decided, 0 failed | 236 s, ~7 items/s |
-| Batch, 10 customers | 5.7 req/s (359) | 11.1% (40) | 1.15 s | 3.99 s | 3,190, all decided, 0 failed | 639 s, ~4 items/s |
+| `POST /evaluations`, 1 customer | 13.1 req/s (812) | 2.0% (16) | 439 ms | 1.12 s | — | — |
+| Batch, 3 to 5 customers | 6.8 req/s (418) | 7.7% (32) | 575 ms | 5.31 s | 1,563 decided | 268 s, ~5 items/s |
 
 - **Every error is a 3 s Lambda timeout inside Floci.** The Floci log shows
   `Function CreditCardEngine-Evaluate… timed out after 3s` once per failed
-  request. The more rows a request writes, the more often it hits the timeout:
-  Floci's DynamoDB slows down as the tables grow and the worker drains at the
+  request. The more rows a request writes, the more often it hits the timeout.
+  Floci's DynamoDB slows as the tables grow, and the worker drains at the
   same time.
-- **Inside the engine, the sync request stays fast.** The engine's own
-  `DecisionLatencyMs` for the sync scenario (a sample of 271 requests, pulled
-  from the lines Floci copies from each Lambda) was p50 422 ms, p95 538 ms,
-  and p99 978 ms. Nearly all of it is the `PutItem` to Floci's DynamoDB.
-- **An exploratory run with 50 customers per batch exposed the bug.** With
-  more timeouts, more items were queued than the successful requests had
-  written: requests that timed out had written their items, and the Lambda
-  was killed before it could delete them. The fix is in `ddb.Store.Create` and
-  `TestCreateStopsWritingInTimeToRollBack`. The load test now caps a batch at
-  10 customers.
-
-### The 10-second runs
-
-Shorter runs look better, because Floci degrades over time. They are context,
-not the result:
-
-| Scenario | Reached | Errors | p95 |
-|---|---|---|---|
-| `POST /evaluations` | 15.5 req/s | 0 | 1.05 s |
-| Batch, 3 to 5 customers | 10.7 req/s | 0 | 1.46 s |
-| Batch, 10 customers | 10.6 req/s | 0 | 1.24 s |
+- **The engine's sync path is the `PutItem`.** `DecisionLatencyMs` for the
+  sync scenario (a sample of 271 requests, from the lines Floci copies from
+  each Lambda) is p50 422 ms, p95 538 ms, and p99 978 ms.
+- **`Create` stops writing a second before the Lambda deadline.** The
+  invocation then deletes the rows it wrote.
+  `TestCreateStopsWritingInTimeToRollBack` covers the rollback. The load test
+  caps a batch at 10 customers.
 
 ### Where one request spends its time on Floci
 
