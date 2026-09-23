@@ -71,9 +71,11 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		"IDEMPOTENCY_KEYS_TABLE": keys.TableName(),
 		"BATCH_SIZE":             jsii.String(size),
 	}, flociEvaluateConcurrency)
-	decisions.GrantReadWriteData(fn)
-	items.GrantReadWriteData(fn)
-	keys.GrantReadWriteData(fn)
+	// Each Lambda gets the DynamoDB actions its code calls, nothing more: no
+	// Scan, and no delete outside the batch rollback and a released key.
+	decisions.Grant(fn, *jsii.Strings(httpDecisionActions...)...)
+	items.Grant(fn, *jsii.Strings(httpItemActions...)...)
+	keys.Grant(fn, *jsii.Strings(httpKeyActions...)...)
 
 	// The relay turns the table's stream into queue messages (ADR 0004). The
 	// event source grants the stream read; the relay reads no rows.
@@ -91,7 +93,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 	worker := goLambda(stack, workerFunctionID, "WorkerLogs", "worker", map[string]*string{
 		"BATCH_ITEMS_TABLE": items.TableName(),
 	}, flociWorkerConcurrency)
-	items.GrantReadWriteData(worker)
+	items.Grant(worker, *jsii.Strings(workerItemActions...)...)
 	queue.GrantConsumeMessages(worker)
 	worker.AddEventSource(awslambdaeventsources.NewSqsEventSource(queue, &awslambdaeventsources.SqsEventSourceProps{
 		BatchSize:               jsii.Number(workerBatch()),
@@ -102,7 +104,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 	dlqConsumer := goLambda(stack, dlqFunctionID, "DlqConsumerLogs", "dlq", map[string]*string{
 		"BATCH_ITEMS_TABLE": items.TableName(),
 	}, flociDlqConcurrency)
-	items.GrantReadWriteData(dlqConsumer)
+	items.Grant(dlqConsumer, *jsii.Strings(dlqItemActions...)...)
 	// The event source grants consume on the DLQ, and nothing else on SQS.
 	dlqConsumer.AddEventSource(awslambdaeventsources.NewSqsEventSource(dlq, &awslambdaeventsources.SqsEventSourceProps{
 		BatchSize:               jsii.Number(sqsBatchSize),

@@ -5,6 +5,17 @@ import (
 	"runtime"
 )
 
+// The DynamoDB actions each Lambda's code calls (adapter/ddb). The HTTP Lambda
+// deletes batch items only through BatchWriteItem, to roll back a failed
+// submit, and deletes a key only to release it.
+var (
+	httpDecisionActions = []string{"dynamodb:PutItem", "dynamodb:GetItem"}
+	httpItemActions     = []string{"dynamodb:BatchWriteItem", "dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Query"}
+	httpKeyActions      = []string{"dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem"}
+	workerItemActions   = []string{"dynamodb:GetItem", "dynamodb:UpdateItem"}
+	dlqItemActions      = []string{"dynamodb:UpdateItem"}
+)
+
 const (
 	stackName        = "CreditCardEngine"
 	functionID       = "Evaluate"

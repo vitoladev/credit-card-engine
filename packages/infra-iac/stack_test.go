@@ -220,6 +220,54 @@ func TestStackHasTheDLQAndItsConsumer(t *testing.T) {
 	// only the batch items and the DLQ.
 	onlyResources(t, template, *worker, *items, *queue)
 	onlyResources(t, template, *consumer, *items, *dlq)
+
+	// And only the DynamoDB actions their code calls.
+	fnID := func(id string) string {
+		return *stack.GetLogicalId(stack.Node().FindChild(jsii.String(id)).Node().DefaultChild().(awscdk.CfnElement))
+	}
+	for fn, want := range map[string][]string{
+		fnID(functionID):       union(httpDecisionActions, httpItemActions, httpKeyActions),
+		fnID(workerFunctionID): workerItemActions,
+		fnID(dlqFunctionID):    dlqItemActions,
+		fnID(relayFunctionID):  {"dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:ListStreams"},
+	} {
+		if got := dynamoActions(template, fn); !slices.Equal(got, union(want)) {
+			t.Fatalf("%s DynamoDB actions %v, want %v", fn, got, union(want))
+		}
+	}
+}
+
+// dynamoActions lists, sorted and once each, the dynamodb: actions of the
+// function's role.
+func dynamoActions(template assertions.Template, fn string) []string {
+	role := (*template.FindResources(jsii.String("AWS::Lambda::Function"), map[string]any{}))[fn]
+	roleRef := (*role)["Properties"].(map[string]any)["Role"].(map[string]any)["Fn::GetAtt"].([]any)[0].(string)
+	var got []string
+	for _, p := range *template.FindResources(jsii.String("AWS::IAM::Policy"), nil) {
+		props := (*p)["Properties"].(map[string]any)
+		mine := slices.ContainsFunc(props["Roles"].([]any), func(r any) bool { return r.(map[string]any)["Ref"] == roleRef })
+		if !mine {
+			continue
+		}
+		for _, st := range props["PolicyDocument"].(map[string]any)["Statement"].([]any) {
+			for _, a := range resources(st.(map[string]any)["Action"]) {
+				if s, _ := a.(string); strings.HasPrefix(s, "dynamodb:") {
+					got = append(got, s)
+				}
+			}
+		}
+	}
+	return union(got)
+}
+
+// union merges the lists, sorted and without repeats.
+func union(lists ...[]string) []string {
+	var out []string
+	for _, l := range lists {
+		out = append(out, l...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // onlyResources fails unless every statement of the function's role, past
