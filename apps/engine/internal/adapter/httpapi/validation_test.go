@@ -127,7 +127,7 @@ func TestBatchStoresNormalizedCPF(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp.Body), &acc); err != nil {
 		t.Fatal(err)
 	}
-	it, err := ddb.New(h.cfg, ddb.Tables(h.tables)).Item(t.Context(), acc.BatchID, acc.ItemIDs[0])
+	it, err := ddb.NewItems(h.cfg, h.tables.Items).Item(t.Context(), acc.BatchID, acc.ItemIDs[0])
 	if err != nil || it.Customer.CPF != "39053344705" {
 		t.Fatalf("item=%+v err=%v", it, err)
 	}

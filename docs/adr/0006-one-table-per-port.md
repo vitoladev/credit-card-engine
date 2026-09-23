@@ -28,9 +28,9 @@ Now each port has its own table, keyed by its own IDs:
 | `BatchItems` | `batch.Items` | `batch_id`, `item_id` | `NEW_IMAGE`, to the relay | no | yes |
 | `IdempotencyKeys` | `idempotency.Store` | `idempotency_key` | no | `expires_at` | no |
 
-`adapter/ddb` still implements the three ports, now with `ddb.Tables` naming
-the three tables. The HTTP Lambda reads and writes all three. The worker and
-the DLQ consumer reach only `BatchItems`, and the relay reads only its stream.
+`adapter/ddb` implements the three ports as `ddb.Decisions`, `ddb.Items`, and
+`ddb.Keys`. The HTTP Lambda reads and writes all three. The worker and the DLQ
+consumer reach only `BatchItems`, and the relay reads only its stream.
 
 ## Considered options
 

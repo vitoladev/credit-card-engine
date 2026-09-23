@@ -83,7 +83,7 @@ func newHarnessWithBatchSize(t *testing.T, size int) *harness {
 	h := &harness{t: t, cfg: cfg, faults: faults, tables: flocitest.CreateTables(t, cfg), queue: flocitest.Queue(t, cfg), emit: &recorder{}}
 	h.stream = flocitest.TableStream(t, cfg, h.tables.Items)
 	h.b = batch.New(batch.Deps{
-		Items:        ddb.New(cfg, ddb.Tables{Items: h.tables.Items}),
+		Items:        ddb.NewItems(cfg, h.tables.Items),
 		Publisher:    sqspub.New(cfg, h.queue),
 		Policy:       rules.NewPolicy(),
 		Emitter:      h.emit,

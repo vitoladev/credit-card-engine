@@ -30,7 +30,7 @@ func TestTheLambdaNeedsOnlyTheBatchItemsTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st := ddb.New(cfg, ddb.Tables{Items: tables.Items})
+	st := ddb.NewItems(cfg, tables.Items)
 	item := batch.Item{ID: uuid.NewV7().String(), Customer: domain.Customer{
 		Name: "Ana", CPF: "39053344705", CreditScore: 780, CurrentInvoiceCents: 50_000,
 		CreditLimitCents: 500_000, MonthlySpendCents: []int64{80_000, 90_000, 70_000},

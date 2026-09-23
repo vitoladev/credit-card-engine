@@ -179,8 +179,7 @@ func (f *Faults) dropEntries(stack *middleware.Stack) error {
 // the name is repeated; the ddb tests fail if the two differ.
 const statusIndex = "by-status"
 
-// Tables names one test's copies of the engine's tables. Its fields match
-// ddb.Tables, so a test converts it: ddb.Tables(tables).
+// Tables names one test's copies of the engine's tables.
 type Tables struct {
 	Decisions string
 	Items     string

@@ -3,6 +3,7 @@ package ddb
 import (
 	"context"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
@@ -17,11 +18,12 @@ import (
 // an expired item within days, not on time, so every condition also treats an
 // expired item as absent. The table has no stream.
 type Keys struct {
-	st *Store
+	client *dynamodb.Client
+	table  string
 }
 
-func NewKeys(st *Store) Keys {
-	return Keys{st: st}
+func NewKeys(cfg aws.Config, table string) Keys {
+	return Keys{client: dynamodb.NewFromConfig(cfg), table: table}
 }
 
 const (
@@ -43,8 +45,8 @@ func (k Keys) Claim(ctx context.Context, key string, c idempotency.Claim) (idemp
 	row["state"] = sAttr(keyPending)
 	row["lease_until"] = n64Attr(c.LeaseUntil.UnixMilli())
 	row["expires_at"] = n64Attr(c.ExpiresAt.Unix())
-	_, err := k.st.client.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: new(k.st.tables.Keys),
+	_, err := k.client.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName: new(k.table),
 		Item:      row,
 		ConditionExpression: new("attribute_not_exists(idempotency_key) OR expires_at < :now_s OR " +
 			"(#state = :pending AND lease_until < :now_ms)"),
@@ -66,8 +68,8 @@ func (k Keys) Claim(ctx context.Context, key string, c idempotency.Claim) (idemp
 
 // Complete stores the response on the claim owner still holds.
 func (k Keys) Complete(ctx context.Context, key, owner string, r idempotency.Response) error {
-	_, err := k.st.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:                new(k.st.tables.Keys),
+	_, err := k.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:                new(k.table),
 		Key:                      idempotencyKey(key),
 		UpdateExpression:         new("SET #state = :done, status_code = :code, #body = :body REMOVE lease_until"),
 		ConditionExpression:      new("#owner = :owner AND #state = :pending"),
@@ -85,8 +87,8 @@ func (k Keys) Complete(ctx context.Context, key, owner string, r idempotency.Res
 
 // Release deletes the pending claim owner still holds.
 func (k Keys) Release(ctx context.Context, key, owner string) error {
-	_, err := k.st.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName:                new(k.st.tables.Keys),
+	_, err := k.client.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName:                new(k.table),
 		Key:                      idempotencyKey(key),
 		ConditionExpression:      new("#owner = :owner AND #state = :pending"),
 		ExpressionAttributeNames: map[string]string{"#state": "state", "#owner": "owner"},

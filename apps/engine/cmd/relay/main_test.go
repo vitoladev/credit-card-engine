@@ -29,7 +29,7 @@ func TestTheRelaySendsQueuedItemsFromTheStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	stream := flocitest.TableStream(t, cfg, tables.Items)
-	st := ddb.New(cfg, ddb.Tables{Items: tables.Items})
+	st := ddb.NewItems(cfg, tables.Items)
 	items := []batch.Item{
 		{ID: uuid.NewV7().String(), Customer: domain.Customer{Name: "Ana", CPF: "39053344705"}},
 		{ID: uuid.NewV7().String(), Customer: domain.Customer{Name: "Bruno", CPF: "12345678909"}},

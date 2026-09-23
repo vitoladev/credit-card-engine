@@ -34,7 +34,7 @@ func compose(ctx context.Context) (sqs.Consumer, error) {
 		return sqs.Consumer{}, err
 	}
 	return sqs.DeadLetters(batch.New(batch.Deps{
-		Items:   ddb.New(cfg, ddb.Tables{Items: items}),
+		Items:   ddb.NewItems(cfg, items),
 		Emitter: telemetry.EMF{},
 	})), nil
 }

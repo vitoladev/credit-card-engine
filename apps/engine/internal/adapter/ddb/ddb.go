@@ -17,7 +17,6 @@ import (
 
 	"engine/internal/batch"
 	"engine/internal/domain"
-	"engine/internal/evaluate"
 )
 
 // Each port has its own table (ADR 0006):
@@ -56,21 +55,15 @@ func batchStatus(batchID string, s batch.ItemStatus) string {
 	return batchID + "#" + string(s)
 }
 
-// Tables names the engine's tables. A Lambda that uses only some ports leaves
-// the others empty.
-type Tables struct {
-	Decisions string
-	Items     string
-	Keys      string
-}
-
-type Store struct {
+// Items is the BatchItems table: one row per batch item, keyed by batch_id
+// and item_id (ADR 0006).
+type Items struct {
 	client *dynamodb.Client
-	tables Tables
+	table  string
 }
 
-func New(cfg aws.Config, tables Tables) *Store {
-	return &Store{client: dynamodb.NewFromConfig(cfg), tables: tables}
+func NewItems(cfg aws.Config, table string) *Items {
+	return &Items{client: dynamodb.NewFromConfig(cfg), table: table}
 }
 
 func sAttr(v string) *types.AttributeValueMemberS { return &types.AttributeValueMemberS{Value: v} }
@@ -82,49 +75,13 @@ func nAttr(v int) *types.AttributeValueMemberN {
 	return &types.AttributeValueMemberN{Value: strconv.Itoa(v)}
 }
 
-func decisionKey(id string) map[string]types.AttributeValue {
-	return map[string]types.AttributeValue{"decision_id": sAttr(id)}
-}
-
 func itemKey(batchID, itemID string) map[string]types.AttributeValue {
 	return map[string]types.AttributeValue{"batch_id": sAttr(batchID), "item_id": sAttr(itemID)}
 }
 
-func (st *Store) Save(ctx context.Context, decisionID string, c domain.Customer, r domain.Result) error {
-	customer, err := json.Marshal(c)
-	if err != nil {
-		return err
-	}
-	result, err := json.Marshal(r)
-	if err != nil {
-		return err
-	}
-	item := decisionKey(decisionID)
-	item["customer"] = sAttr(string(customer))
-	item["result"] = sAttr(string(result))
-	_, err = st.client.PutItem(ctx, &dynamodb.PutItemInput{TableName: new(st.tables.Decisions), Item: item})
-	return err
-}
-
-func (st *Store) Get(ctx context.Context, decisionID string) (domain.Result, error) {
-	out, err := st.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName:      new(st.tables.Decisions),
-		Key:            decisionKey(decisionID),
-		ConsistentRead: new(true),
-	})
-	if err != nil {
-		return domain.Result{}, err
-	}
-	if out.Item == nil {
-		return domain.Result{}, evaluate.ErrNotFound
-	}
-	var r domain.Result
-	return r, unmarshalAttr(out.Item, "result", &r)
-}
-
 // Create writes every item with BatchWriteItem, several chunks in flight
 // at once. A failed write deletes every row for the batch.
-func (st *Store) Create(ctx context.Context, batchID string, items []batch.Item) error {
+func (st *Items) Create(ctx context.Context, batchID string, items []batch.Item) error {
 	now := time.Now().UnixMilli()
 	puts := make([]types.WriteRequest, 0, len(items))
 	for _, it := range items {
@@ -191,7 +148,7 @@ func writeDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
 
 // batchWrite sends up to writeChunk requests and retries UnprocessedItems with
 // backoff.
-func (st *Store) batchWrite(ctx context.Context, reqs []types.WriteRequest) error {
+func (st *Items) batchWrite(ctx context.Context, reqs []types.WriteRequest) error {
 	for try := range writeTries {
 		if try > 0 {
 			select {
@@ -201,12 +158,12 @@ func (st *Store) batchWrite(ctx context.Context, reqs []types.WriteRequest) erro
 			}
 		}
 		out, err := st.client.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
-			RequestItems: map[string][]types.WriteRequest{st.tables.Items: reqs},
+			RequestItems: map[string][]types.WriteRequest{st.table: reqs},
 		})
 		if err != nil {
 			return fmt.Errorf("batch write item: %w", err)
 		}
-		reqs = out.UnprocessedItems[st.tables.Items]
+		reqs = out.UnprocessedItems[st.table]
 		if len(reqs) == 0 {
 			return nil
 		}
@@ -216,7 +173,7 @@ func (st *Store) batchWrite(ctx context.Context, reqs []types.WriteRequest) erro
 
 // Decide moves the item to APPROVED or DENIED, conditional on it being QUEUED
 // on this attempt.
-func (st *Store) Decide(ctx context.Context, batchID, itemID string, attempt int, r domain.Result) error {
+func (st *Items) Decide(ctx context.Context, batchID, itemID string, attempt int, r domain.Result) error {
 	result, err := json.Marshal(r)
 	if err != nil {
 		return err
@@ -231,7 +188,7 @@ func (st *Store) Decide(ctx context.Context, batchID, itemID string, attempt int
 }
 
 // Fail moves the item from QUEUED to FAILED, conditional on this attempt.
-func (st *Store) Fail(ctx context.Context, batchID, itemID string, attempt int) error {
+func (st *Items) Fail(ctx context.Context, batchID, itemID string, attempt int) error {
 	err := st.move(ctx, batchID, itemID, batch.Failed, batch.Queued, itemUpdate{
 		update: "SET #status = :to",
 		cond:   "#status = :from AND #attempts = :attempt",
@@ -244,7 +201,7 @@ func (st *Store) Fail(ctx context.Context, batchID, itemID string, attempt int) 
 // Retry moves the item from FAILED on this attempt to QUEUED on the next one.
 // The attempt cap is part of the condition, so a concurrent retry cannot
 // exceed it.
-func (st *Store) Retry(ctx context.Context, batchID, itemID string, attempt int) error {
+func (st *Items) Retry(ctx context.Context, batchID, itemID string, attempt int) error {
 	err := st.move(ctx, batchID, itemID, batch.Queued, batch.Failed, itemUpdate{
 		update: "SET #status = :to, #attempts = #attempts + :one, #queued_at = :now",
 		cond:   "#status = :from AND #attempts = :attempt AND #attempts < :max",
@@ -266,7 +223,7 @@ func (st *Store) Retry(ctx context.Context, batchID, itemID string, attempt int)
 // RetryMany retries each item with its own conditional update, several in
 // flight at once. Items that cannot transition are skipped. The first store
 // error stops the items not yet started.
-func (st *Store) RetryMany(ctx context.Context, batchID string, items []batch.Item) ([]batch.Item, error) {
+func (st *Items) RetryMany(ctx context.Context, batchID string, items []batch.Item) ([]batch.Item, error) {
 	moved := make([]bool, len(items))
 	var (
 		mu   sync.Mutex
@@ -307,7 +264,7 @@ func (st *Store) RetryMany(ctx context.Context, batchID string, items []batch.It
 	return queued, errors.Join(errs...)
 }
 
-func (st *Store) deleteBatch(ctx context.Context, batchID string) error {
+func (st *Items) deleteBatch(ctx context.Context, batchID string) error {
 	keys, err := st.keysForBatch(ctx, batchID)
 	if err != nil {
 		return err
@@ -325,9 +282,9 @@ func (st *Store) deleteBatch(ctx context.Context, batchID string) error {
 	return errors.Join(errs...)
 }
 
-func (st *Store) keysForBatch(ctx context.Context, batchID string) ([]map[string]types.AttributeValue, error) {
+func (st *Items) keysForBatch(ctx context.Context, batchID string) ([]map[string]types.AttributeValue, error) {
 	in := &dynamodb.QueryInput{
-		TableName:              new(st.tables.Items),
+		TableName:              new(st.table),
 		KeyConditionExpression: new("batch_id = :b"),
 		ProjectionExpression:   new("batch_id, item_id"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{
@@ -351,7 +308,7 @@ func (st *Store) keysForBatch(ctx context.Context, batchID string) ([]map[string
 
 // Cancel moves the item from FAILED to CANCELLED. An item already CANCELLED
 // is left as it is and the call succeeds.
-func (st *Store) Cancel(ctx context.Context, batchID, itemID string) error {
+func (st *Items) Cancel(ctx context.Context, batchID, itemID string) error {
 	err := st.move(ctx, batchID, itemID, batch.Cancelled, batch.Failed, itemUpdate{
 		update: "SET #status = :to",
 		cond:   "#status = :from",
@@ -372,7 +329,7 @@ type itemUpdate struct {
 }
 
 // move changes one item's status with a single conditional UpdateItem.
-func (st *Store) move(ctx context.Context, batchID, itemID string, to, from batch.ItemStatus, u itemUpdate) error {
+func (st *Items) move(ctx context.Context, batchID, itemID string, to, from batch.ItemStatus, u itemUpdate) error {
 	names := map[string]string{"#status": "status", "#batch_status": "batch_status"}
 	maps.Copy(names, u.names)
 	vals := map[string]types.AttributeValue{
@@ -381,7 +338,7 @@ func (st *Store) move(ctx context.Context, batchID, itemID string, to, from batc
 	}
 	maps.Copy(vals, u.values)
 	_, err := st.client.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName:                           new(st.tables.Items),
+		TableName:                           new(st.table),
 		Key:                                 itemKey(batchID, itemID),
 		UpdateExpression:                    new(u.update + ", #batch_status = :batch_status"),
 		ConditionExpression:                 new(u.cond),
@@ -420,9 +377,9 @@ func transitionErr(err error) error {
 	return batch.ErrInvalidTransition
 }
 
-func (st *Store) Item(ctx context.Context, batchID, itemID string) (batch.Item, error) {
+func (st *Items) Item(ctx context.Context, batchID, itemID string) (batch.Item, error) {
 	out, err := st.client.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName:      new(st.tables.Items),
+		TableName:      new(st.table),
 		Key:            itemKey(batchID, itemID),
 		ConsistentRead: new(true),
 	})
@@ -440,7 +397,7 @@ func (st *Store) Item(ctx context.Context, batchID, itemID string) (batch.Item, 
 // stops early at 1 MB, so Page repeats it until the page holds q.Limit items
 // or the items end. An empty first page is an unknown batch unless the batch
 // has items in another status.
-func (st *Store) Page(ctx context.Context, batchID string, q batch.PageQuery) (batch.Page, error) {
+func (st *Items) Page(ctx context.Context, batchID string, q batch.PageQuery) (batch.Page, error) {
 	p, err := st.read(ctx, st.pageInput(batchID, q), q.Limit)
 	if err != nil {
 		return batch.Page{}, err
@@ -455,7 +412,7 @@ func (st *Store) Page(ctx context.Context, batchID string, q batch.PageQuery) (b
 
 // read runs the Query until it has limit items or the items end, and sets
 // More when an item follows the page.
-func (st *Store) read(ctx context.Context, in *dynamodb.QueryInput, limit int) (batch.Page, error) {
+func (st *Items) read(ctx context.Context, in *dynamodb.QueryInput, limit int) (batch.Page, error) {
 	var p batch.Page
 	for {
 		in.Limit = new(int32(limit - len(p.Items)))
@@ -479,9 +436,9 @@ func (st *Store) read(ctx context.Context, in *dynamodb.QueryInput, limit int) (
 
 // mustExist returns ErrNotFound for a batch with no items. A batch always has
 // at least one, so a batch_id with none is unknown.
-func (st *Store) mustExist(ctx context.Context, batchID string) error {
+func (st *Items) mustExist(ctx context.Context, batchID string) error {
 	out, err := st.client.Query(ctx, &dynamodb.QueryInput{
-		TableName:                 new(st.tables.Items),
+		TableName:                 new(st.table),
 		KeyConditionExpression:    new("batch_id = :b"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{":b": sAttr(batchID)},
 		Select:                    types.SelectCount,
@@ -501,7 +458,7 @@ func (st *Store) mustExist(ctx context.Context, batchID string) error {
 // LastEvaluatedKey whenever a Query stops at its Limit, even on the last item,
 // so a full page checks before it hands out a cursor to an empty page. Every
 // item the Query reads matches, so reading one is enough.
-func (st *Store) more(ctx context.Context, in *dynamodb.QueryInput, start map[string]types.AttributeValue) (bool, error) {
+func (st *Items) more(ctx context.Context, in *dynamodb.QueryInput, start map[string]types.AttributeValue) (bool, error) {
 	probe := *in
 	probe.Select = types.SelectCount
 	probe.ExclusiveStartKey = start
@@ -517,10 +474,10 @@ func (st *Store) more(ctx context.Context, in *dynamodb.QueryInput, start map[st
 // StatusIndex, which is eventually consistent: an item that just changed
 // status can show under its old status for a moment. Without one it reads the
 // batch's items with a consistent Query.
-func (st *Store) pageInput(batchID string, q batch.PageQuery) *dynamodb.QueryInput {
+func (st *Items) pageInput(batchID string, q batch.PageQuery) *dynamodb.QueryInput {
 	if q.Status == "" {
 		in := &dynamodb.QueryInput{
-			TableName:                 new(st.tables.Items),
+			TableName:                 new(st.table),
 			KeyConditionExpression:    new("batch_id = :b"),
 			ExpressionAttributeValues: map[string]types.AttributeValue{":b": sAttr(batchID)},
 			ConsistentRead:            new(true),
@@ -532,7 +489,7 @@ func (st *Store) pageInput(batchID string, q batch.PageQuery) *dynamodb.QueryInp
 	}
 	bs := batchStatus(batchID, q.Status)
 	in := &dynamodb.QueryInput{
-		TableName:                 new(st.tables.Items),
+		TableName:                 new(st.table),
 		IndexName:                 new(StatusIndex),
 		KeyConditionExpression:    new("batch_status = :bs"),
 		ExpressionAttributeValues: map[string]types.AttributeValue{":bs": sAttr(bs)},

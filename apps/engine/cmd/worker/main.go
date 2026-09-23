@@ -35,7 +35,7 @@ func compose(ctx context.Context) (sqs.Consumer, error) {
 		return sqs.Consumer{}, err
 	}
 	return sqs.Worker(batch.New(batch.Deps{
-		Items:   ddb.New(cfg, ddb.Tables{Items: items}),
+		Items:   ddb.NewItems(cfg, items),
 		Policy:  rules.NewPolicy(),
 		Emitter: telemetry.EMF{},
 	})), nil

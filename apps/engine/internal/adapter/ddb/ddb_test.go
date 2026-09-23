@@ -23,7 +23,8 @@ import (
 )
 
 type store struct {
-	*ddb.Store
+	*ddb.Items
+	*ddb.Decisions
 	faults *flocitest.Faults
 	cfg    aws.Config
 	tables flocitest.Tables
@@ -33,7 +34,13 @@ func newStore(t *testing.T) store {
 	t.Helper()
 	cfg, faults := flocitest.Config(t)
 	tables := flocitest.CreateTables(t, cfg)
-	return store{Store: ddb.New(cfg, ddb.Tables(tables)), faults: faults, cfg: cfg, tables: tables}
+	return store{
+		Items:     ddb.NewItems(cfg, tables.Items),
+		Decisions: ddb.NewDecisions(cfg, tables.Decisions),
+		faults:    faults,
+		cfg:       cfg,
+		tables:    tables,
+	}
 }
 
 // newItems gives each customer a version 7 item ID, as batch.Submit does.
@@ -585,7 +592,7 @@ func TestTheStatusIndexFollowsEveryTransition(t *testing.T) {
 func TestEachPortWritesOnlyItsOwnTable(t *testing.T) {
 	st := newStore(t)
 	ctx := t.Context()
-	k := ddb.NewKeys(st.Store)
+	k := ddb.NewKeys(st.cfg, st.tables.Keys)
 	counts := func() [3]int {
 		return [3]int{
 			flocitest.Rows(t, st.cfg, st.tables.Decisions),
@@ -618,7 +625,7 @@ func TestEachPortWritesOnlyItsOwnTable(t *testing.T) {
 func TestItemsNeedOnlyTheBatchItemsTable(t *testing.T) {
 	cfg, _ := flocitest.Config(t)
 	tables := flocitest.CreateTables(t, cfg)
-	st := ddb.New(cfg, ddb.Tables{Items: tables.Items})
+	st := ddb.NewItems(cfg, tables.Items)
 	ctx := t.Context()
 	items := newItems([]domain.Customer{{Name: "Ana", CPF: "39053344705"}, {Name: "Bruno", CPF: "12345678909"}})
 	if err := st.Create(ctx, "b1", items); err != nil {

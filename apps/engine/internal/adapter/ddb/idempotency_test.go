@@ -10,6 +10,12 @@ import (
 	"engine/internal/idempotency"
 )
 
+func newKeys(t *testing.T) ddb.Keys {
+	t.Helper()
+	st := newStore(t)
+	return ddb.NewKeys(st.cfg, st.tables.Keys)
+}
+
 func claimAt(fp string, now time.Time) idempotency.Claim {
 	return idempotency.Claim{
 		Fingerprint: fp,
@@ -30,7 +36,7 @@ func claim(t *testing.T, k ddb.Keys, key string, c idempotency.Claim) (idempoten
 }
 
 func TestAPendingKeyIsHeldUntilItsLeaseEnds(t *testing.T) {
-	k := ddb.NewKeys(newStore(t).Store)
+	k := newKeys(t)
 	now := time.Now()
 	first := claimAt("fp", now)
 	if _, ok := claim(t, k, "key", first); !ok {
@@ -56,7 +62,7 @@ func TestAPendingKeyIsHeldUntilItsLeaseEnds(t *testing.T) {
 }
 
 func TestACompletedKeyReplaysUntilItExpires(t *testing.T) {
-	k := ddb.NewKeys(newStore(t).Store)
+	k := newKeys(t)
 	now := time.Now()
 	c := claimAt("fp", now)
 	claim(t, k, "key", c)
@@ -77,7 +83,7 @@ func TestACompletedKeyReplaysUntilItExpires(t *testing.T) {
 }
 
 func TestAReleasedKeyCanBeClaimedAgain(t *testing.T) {
-	k := ddb.NewKeys(newStore(t).Store)
+	k := newKeys(t)
 	c := claimAt("fp", time.Now())
 	claim(t, k, "key", c)
 	if err := k.Release(t.Context(), "key", c.Owner); err != nil {
@@ -90,7 +96,7 @@ func TestAReleasedKeyCanBeClaimedAgain(t *testing.T) {
 
 // Claims that race on one key: DynamoDB's condition lets exactly one win.
 func TestRacingClaimsHaveOneWinner(t *testing.T) {
-	k := ddb.NewKeys(newStore(t).Store)
+	k := newKeys(t)
 	now := time.Now()
 	var (
 		wg   sync.WaitGroup

@@ -35,7 +35,7 @@ func newModule(t *testing.T) (evaluate.Module, *flocitest.Faults, *recorder, fun
 	tables := flocitest.CreateTables(t, cfg)
 	rec := &recorder{}
 	rows := func() int { return flocitest.Rows(t, cfg, tables.All()...) }
-	return evaluate.New(rules.NewPolicy(), ddb.New(cfg, ddb.Tables(tables)), rec), faults, rec, rows
+	return evaluate.New(rules.NewPolicy(), ddb.NewDecisions(cfg, tables.Decisions), rec), faults, rec, rows
 }
 
 func TestEvaluateRecordsTheDecisionBeforeReturningIt(t *testing.T) {
