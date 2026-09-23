@@ -21,9 +21,9 @@ func TestStackHasTheDayZeroSurface(t *testing.T) {
 	template.ResourceCountIs(jsii.String("AWS::DynamoDB::Table"), jsii.Number(1))
 	template.ResourceCountIs(jsii.String("AWS::ApiGatewayV2::Api"), jsii.Number(1))
 	template.ResourceCountIs(jsii.String("AWS::ApiGatewayV2::Stage"), jsii.Number(1))
-	template.ResourceCountIs(jsii.String("AWS::Lambda::Function"), jsii.Number(3))
+	template.ResourceCountIs(jsii.String("AWS::Lambda::Function"), jsii.Number(4))
 	template.ResourceCountIs(jsii.String("AWS::SQS::Queue"), jsii.Number(2))
-	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Alarm"), jsii.Number(5))
+	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Alarm"), jsii.Number(6))
 
 	template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), map[string]any{
 		"BillingMode": "PAY_PER_REQUEST",
@@ -61,6 +61,46 @@ func TestStackHasTheDayZeroSurface(t *testing.T) {
 			"ThrottlingBurstLimit": 2400,
 		},
 	})
+}
+
+// ADR 0004: the table's stream feeds the relay, and the relay is the only
+// Lambda that may send to the queue.
+func TestRelayIsTheOutboxOfTheTableStream(t *testing.T) {
+	t.Cleanup(jsii.Close)
+	app := awscdk.NewApp(nil)
+	template := assertions.Template_FromStack(NewStack(app, "Test", nil), nil)
+
+	template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), map[string]any{
+		"StreamSpecification": map[string]any{"StreamViewType": "NEW_IMAGE"},
+	})
+	template.HasResourceProperties(jsii.String("AWS::Lambda::EventSourceMapping"), map[string]any{
+		"StartingPosition":           "TRIM_HORIZON",
+		"BatchSize":                  streamBatchSize,
+		"BisectBatchOnFunctionError": true,
+		"FunctionResponseTypes":      []any{"ReportBatchItemFailures"},
+		"FunctionName":               map[string]any{"Ref": assertions.Match_StringLikeRegexp(jsii.String(relayFunctionID))},
+	})
+	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
+		"MetricName": "IteratorAge",
+		"Threshold":  iteratorAgeAlarmMs,
+	})
+
+	var senders []string
+	for _, p := range *template.FindResources(jsii.String("AWS::IAM::Policy"), nil) {
+		props := (*p)["Properties"].(map[string]any)
+		for _, st := range props["PolicyDocument"].(map[string]any)["Statement"].([]any) {
+			for _, a := range resources(st.(map[string]any)["Action"]) {
+				if a == "sqs:SendMessage" {
+					for _, r := range props["Roles"].([]any) {
+						senders = append(senders, r.(map[string]any)["Ref"].(string))
+					}
+				}
+			}
+		}
+	}
+	if len(senders) != 1 || !strings.HasPrefix(senders[0], relayFunctionID) {
+		t.Fatalf("roles that may send to the queue: %v", senders)
+	}
 }
 
 func TestStackHasTheDLQAndItsConsumer(t *testing.T) {
@@ -293,8 +333,8 @@ func TestLambdaEndpointReachesFloci(t *testing.T) {
 		want                     []string
 	}{
 		{"real AWS", "", "", nil},
-		{"floci default", "http://localhost:4566", "", []string{"http://floci:4566", "http://floci:4566", "http://floci:4566"}},
-		{"override", "http://floci:4566", "http://other:4566", []string{"http://other:4566", "http://other:4566", "http://other:4566"}},
+		{"floci default", "http://localhost:4566", "", []string{"http://floci:4566", "http://floci:4566", "http://floci:4566", "http://floci:4566"}},
+		{"override", "http://floci:4566", "http://other:4566", []string{"http://other:4566", "http://other:4566", "http://other:4566", "http://other:4566"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("AWS_ENDPOINT_URL", tc.endpoint)
@@ -355,6 +395,7 @@ func TestFlociCapsLambdaConcurrency(t *testing.T) {
 		functionID:       float64(flociEvaluateConcurrency),
 		workerFunctionID: float64(flociWorkerConcurrency),
 		dlqFunctionID:    float64(flociDlqConcurrency),
+		relayFunctionID:  float64(flociRelayConcurrency),
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
@@ -378,16 +419,9 @@ func reservedConcurrency(t *testing.T) map[string]any {
 	got := map[string]any{}
 	for _, fn := range *template.FindResources(jsii.String("AWS::Lambda::Function"), nil) {
 		props := (*fn)["Properties"].(map[string]any)
+		// Each function's log group is "<function id>Logs<hash>".
 		log := props["LoggingConfig"].(map[string]any)["LogGroup"].(map[string]any)["Ref"].(string)
-		name := log
-		switch {
-		case strings.Contains(log, "EvaluateLogs"):
-			name = functionID
-		case strings.Contains(log, "WorkerLogs"):
-			name = workerFunctionID
-		case strings.Contains(log, "DlqConsumerLogs"):
-			name = dlqFunctionID
-		}
+		name, _, _ := strings.Cut(log, "Logs")
 		got[name] = props["ReservedConcurrentExecutions"]
 	}
 	return got

@@ -1,8 +1,9 @@
-// Package batch is the lifecycle of a batch and its items: submit, evaluate
-// each attempt, fail it after the DLQ, and the operator's retry and cancel
-// (ADR 0001). Item status transitions are atomic in the Items adapter; this
-// module decides which transition to ask for and keeps every queued item
-// backed by a message.
+// Package batch is the lifecycle of a batch and its items: submit, relay the
+// items that need evaluating to the queue, evaluate each attempt, fail it after
+// the DLQ, and the operator's retry and cancel (ADR 0001, ADR 0004). Item status
+// transitions are atomic in the Items adapter; this module decides which
+// transition to ask for. Submit and retry only write items: the table's stream
+// feeds Relay, so every queued item gets a message without a second write.
 package batch
 
 import (
@@ -35,9 +36,6 @@ var (
 	ErrTooLarge          = errors.New("batch too large")
 	// ErrNotRecorded means the batch was not stored and nothing was published.
 	ErrNotRecorded = errors.New("batch not recorded")
-	// ErrEnqueueFailed means a retry's message was not published and the item
-	// is failed again.
-	ErrEnqueueFailed = errors.New("enqueue failed")
 	// ErrInvalidCursor means a ListItems cursor was not issued by ListItems.
 	ErrInvalidCursor = errors.New("invalid cursor")
 )
@@ -86,22 +84,36 @@ type Item struct {
 	Result   domain.Result
 }
 
-// Attempt is one pass of a batch item through evaluation, and the body of its
-// queue message.
-type Attempt struct {
-	BatchID  string          `json:"batch_id"`
-	ItemID   string          `json:"item_id"`
-	Number   int             `json:"attempt"`
-	Customer domain.Customer `json:"customer"`
+// ItemEvent is one status change of a batch item, read from the table's
+// stream, and the body of a queue message. It carries no customer data: a
+// consumer that needs the input reads the item. The same transition always has
+// the same ID, so a consumer can drop a duplicate delivery.
+type ItemEvent struct {
+	ID      string     `json:"event_id"`
+	BatchID string     `json:"batch_id"`
+	ItemID  string     `json:"item_id"`
+	Attempt int        `json:"attempt"`
+	Status  ItemStatus `json:"status"`
 }
 
-// ParseAttempt decodes a queue message body.
-func ParseAttempt(body string) (Attempt, error) {
-	var a Attempt
-	if err := json.Unmarshal([]byte(body), &a); err != nil {
-		return Attempt{}, err
+// NewItemEvent is the event of an item reaching status on attempt.
+func NewItemEvent(batchID, itemID string, attempt int, status ItemStatus) ItemEvent {
+	return ItemEvent{
+		ID:      fmt.Sprintf("%s:%s:%d:%s", batchID, itemID, attempt, status),
+		BatchID: batchID,
+		ItemID:  itemID,
+		Attempt: attempt,
+		Status:  status,
 	}
-	return a, nil
+}
+
+// ParseItemEvent decodes a queue message body.
+func ParseItemEvent(body string) (ItemEvent, error) {
+	var e ItemEvent
+	if err := json.Unmarshal([]byte(body), &e); err != nil {
+		return ItemEvent{}, err
+	}
+	return e, nil
 }
 
 // PageQuery selects one page of a batch's items: those with Status (any
@@ -145,10 +157,10 @@ type Items interface {
 	Page(ctx context.Context, batchID string, q PageQuery) (Page, error)
 }
 
-// Publisher sends attempts to the queue. It returns the item IDs of the
-// attempts it did not send.
+// Publisher sends item events to the queue. It returns the IDs of the events
+// it did not send.
 type Publisher interface {
-	Publish(ctx context.Context, attempts []Attempt) (failed []string, err error)
+	Publish(ctx context.Context, events []ItemEvent) (failed []string, err error)
 }
 
 // Emitter records what happened to items as metrics.
@@ -157,8 +169,8 @@ type Emitter interface {
 	ItemFailed(batchID, itemID string, attempt int)
 }
 
-// Deps wires the module. Publisher is needed only to submit and retry, and
-// MaxCustomers only to submit.
+// Deps wires the module. Publisher is needed only to relay, and MaxCustomers
+// only to submit.
 type Deps struct {
 	Items        Items
 	Publisher    Publisher
@@ -202,9 +214,8 @@ type Accepted struct {
 	ItemIDs []string `json:"item_ids"`
 }
 
-// Submit stores every item before publishing, so a message never names an
-// item that does not exist. An item whose publish failed is failed, not left
-// queued with no message, and the batch is still accepted (ADR 0001).
+// Submit stores every customer as a queued item and returns. It publishes
+// nothing: the stream delivers each new item to Relay.
 func (m Module) Submit(ctx context.Context, customers []domain.Customer) (Accepted, error) {
 	if len(customers) > m.maxCustomers {
 		return Accepted{}, ErrTooLarge
@@ -219,53 +230,69 @@ func (m Module) Submit(ctx context.Context, customers []domain.Customer) (Accept
 	if err := m.items.Create(ctx, id, items); err != nil {
 		return Accepted{}, fmt.Errorf("%w: %w", ErrNotRecorded, err)
 	}
-	attempts := make([]Attempt, len(items))
-	for i, it := range items {
-		attempts[i] = Attempt{BatchID: id, ItemID: it.ID, Number: 1, Customer: it.Customer}
-	}
-	failed, err := m.publish(ctx, attempts)
-	if err != nil {
-		return Accepted{}, err
-	}
-	return Accepted{BatchID: id, Queued: len(items) - len(failed), ItemIDs: ids}, nil
+	return Accepted{BatchID: id, Queued: len(items), ItemIDs: ids}, nil
 }
 
-// Process evaluates one attempt and decides its item. A redelivered attempt
-// for an item that already moved on is acknowledged. An error means the
-// message should be redelivered.
-func (m Module) Process(ctx context.Context, a Attempt) error {
-	if a.BatchID == "" {
+// Relay publishes the events that queue an item: the items the worker has to
+// evaluate. Other transitions are not work. It returns the IDs of the events it
+// did not publish, so the stream delivers them again.
+func (m Module) Relay(ctx context.Context, events []ItemEvent) ([]string, error) {
+	var work []ItemEvent
+	for _, e := range events {
+		if e.Status == Queued {
+			work = append(work, e)
+		}
+	}
+	if len(work) == 0 {
+		return nil, nil
+	}
+	return m.pub.Publish(ctx, work)
+}
+
+// Process evaluates the item a queued event names and decides it. An event for
+// an item that already moved on (decided, or queued again on a newer attempt)
+// is acknowledged. An error means the message should be redelivered.
+func (m Module) Process(ctx context.Context, e ItemEvent) error {
+	if e.BatchID == "" {
 		return errors.New("missing batch_id")
 	}
+	it, err := m.items.Item(ctx, e.BatchID, e.ItemID)
+	if err != nil {
+		return err
+	}
+	if it.Status != Queued || it.Attempts != e.Attempt {
+		return nil
+	}
 	start := time.Now()
-	r := m.policy.Evaluate(a.Customer)
-	err := m.items.Decide(ctx, a.BatchID, a.ItemID, a.Number, r)
+	r := m.policy.Evaluate(it.Customer)
+	err = m.items.Decide(ctx, e.BatchID, e.ItemID, e.Attempt, r)
 	if errors.Is(err, ErrInvalidTransition) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	m.emit.ItemDecided(a.BatchID, a.ItemID, r, time.Since(start))
+	m.emit.ItemDecided(e.BatchID, e.ItemID, r, time.Since(start))
 	return nil
 }
 
-// DeadLetter fails the item of an attempt that exhausted its deliveries. It
-// returns an error only when the store may succeed on a later try: an attempt
+// DeadLetter fails the item of an event that exhausted its deliveries. It
+// returns an error only when the store may succeed on a later try: an event
 // that names no item, or whose item already moved on, is acknowledged so it
 // does not loop in the DLQ.
-func (m Module) DeadLetter(ctx context.Context, a Attempt) error {
-	if a.BatchID == "" {
+func (m Module) DeadLetter(ctx context.Context, e ItemEvent) error {
+	if e.BatchID == "" {
 		return nil
 	}
-	err := m.fail(ctx, a.BatchID, a.ItemID, a.Number)
+	err := m.fail(ctx, e.BatchID, e.ItemID, e.Attempt)
 	if errors.Is(err, ErrNotFound) || errors.Is(err, ErrInvalidTransition) {
 		return nil
 	}
 	return err
 }
 
-// Retry requeues one failed item on its next attempt and returns that attempt.
+// Retry moves one failed item back to queued on its next attempt and returns
+// that attempt. The stream delivers the change to Relay.
 func (m Module) Retry(ctx context.Context, batchID, itemID string) (int, error) {
 	it, err := m.items.Item(ctx, batchID, itemID)
 	if err != nil {
@@ -274,20 +301,12 @@ func (m Module) Retry(ctx context.Context, batchID, itemID string) (int, error) 
 	if err := m.items.Retry(ctx, batchID, itemID, it.Attempts); err != nil {
 		return 0, err
 	}
-	a := Attempt{BatchID: batchID, ItemID: itemID, Number: it.Attempts + 1, Customer: it.Customer}
-	failed, err := m.publish(ctx, []Attempt{a})
-	if err != nil {
-		return 0, err
-	}
-	if len(failed) > 0 {
-		return 0, ErrEnqueueFailed
-	}
-	return a.Number, nil
+	return it.Attempts + 1, nil
 }
 
-// RetryFailed requeues every failed item under MaxAttempts and returns how
-// many were published. The failed items come from pages of MaxPageLimit and
-// are published together, never one read or one publish per item.
+// RetryFailed moves every failed item under MaxAttempts back to queued and
+// returns how many moved. The failed items come from pages of MaxPageLimit,
+// never one read per item.
 func (m Module) RetryFailed(ctx context.Context, batchID string) (int, error) {
 	var eligible []Item
 	q := PageQuery{Status: Failed, Limit: MaxPageLimit}
@@ -309,41 +328,13 @@ func (m Module) RetryFailed(ctx context.Context, batchID string) (int, error) {
 	if len(eligible) == 0 {
 		return 0, nil
 	}
-	queued, retryErr := m.items.RetryMany(ctx, batchID, eligible)
-	if len(queued) == 0 {
-		return 0, retryErr
-	}
-	attempts := make([]Attempt, len(queued))
-	for i, it := range queued {
-		attempts[i] = Attempt{BatchID: batchID, ItemID: it.ID, Number: it.Attempts + 1, Customer: it.Customer}
-	}
-	failed, err := m.publish(ctx, attempts)
-	if err != nil {
-		return 0, errors.Join(retryErr, err)
-	}
-	return len(attempts) - len(failed), retryErr
+	queued, err := m.items.RetryMany(ctx, batchID, eligible)
+	return len(queued), err
 }
 
 // Cancel cancels a failed item. Cancelling a cancelled item changes nothing.
 func (m Module) Cancel(ctx context.Context, batchID, itemID string) error {
 	return m.items.Cancel(ctx, batchID, itemID)
-}
-
-// publish sends the attempts and fails every item whose attempt was not sent,
-// so no item stays queued with no message behind it. The publish error itself
-// is not returned: the items it names are failed, and an operator retries them.
-func (m Module) publish(ctx context.Context, attempts []Attempt) ([]string, error) {
-	failed, _ := m.pub.Publish(ctx, attempts)
-	numbers := make(map[string]int, len(attempts))
-	for _, a := range attempts {
-		numbers[a.ItemID] = a.Number
-	}
-	for _, id := range failed {
-		if err := m.fail(ctx, attempts[0].BatchID, id, numbers[id]); err != nil {
-			return nil, fmt.Errorf("fail item %s after its publish failed: %w", id, err)
-		}
-	}
-	return failed, nil
 }
 
 // fail moves a queued item to failed and emits ItemsFailed only when it moved.

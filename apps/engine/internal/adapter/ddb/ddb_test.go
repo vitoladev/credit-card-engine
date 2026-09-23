@@ -8,6 +8,7 @@ import (
 	"testing"
 	"uuid"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
 
 	"engine/internal/adapter/ddb"
@@ -396,5 +397,47 @@ func TestCreateRemovesPartialRowsOnWriteFailure(t *testing.T) {
 	}
 	if n := flocitest.Rows(t, st.cfg, st.table); n != 0 {
 		t.Fatalf("rows=%d", n)
+	}
+}
+
+// The stream carries every row change. Only batch item changes become item
+// events; a decision row and a removal do not.
+func TestStreamRecordsBecomeItemEvents(t *testing.T) {
+	st := newStore(t)
+	ctx := t.Context()
+	id := create(t, st, "b1", []domain.Customer{{Name: "Ana", CPF: "39053344705"}})
+	if err := st.Decide(ctx, "b1", id[0], 1, domain.Result{Decision: domain.Approved}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Save(ctx, "d1", domain.Customer{Name: "Ana", CPF: "39053344705"}, domain.Result{Decision: domain.Approved}); err != nil {
+		t.Fatal(err)
+	}
+
+	var got []batch.ItemEvent
+	for _, rec := range flocitest.TableStream(t, st.cfg, st.table).Next().Records {
+		e, ok, err := ddb.ItemEventFrom(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			got = append(got, e)
+		}
+	}
+	want := []batch.ItemEvent{
+		batch.NewItemEvent("b1", id[0], 1, batch.Queued),
+		batch.NewItemEvent("b1", id[0], 1, batch.Approved),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("events=%+v", got)
+	}
+
+	if _, ok, err := ddb.ItemEventFrom(events.DynamoDBEventRecord{EventName: "REMOVE"}); ok || err != nil {
+		t.Fatalf("remove: ok=%v err=%v", ok, err)
+	}
+	broken := events.DynamoDBEventRecord{EventName: "INSERT", Change: events.DynamoDBStreamRecord{NewImage: map[string]events.DynamoDBAttributeValue{
+		"pk": events.NewStringAttribute("BATCH#b1"), "item_id": events.NewStringAttribute(id[0]),
+	}}}
+	if _, _, err := ddb.ItemEventFrom(broken); err == nil {
+		t.Fatal("decoded a record with no status")
 	}
 }

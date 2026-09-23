@@ -47,6 +47,7 @@ type harness struct {
 	faults *flocitest.Faults
 	table  string
 	queue  string
+	stream *flocitest.Stream
 }
 
 func newHarness(t *testing.T) *harness {
@@ -58,6 +59,7 @@ func newHarnessWithBatchSize(t *testing.T, size int) *harness {
 	cfg, faults := flocitest.Config(t)
 	h := &harness{t: t, cfg: cfg, faults: faults, table: flocitest.Table(t, cfg), queue: flocitest.Queue(t, cfg)}
 	st := ddb.New(cfg, h.table)
+	h.stream = flocitest.TableStream(t, cfg, h.table)
 	h.batch = batch.New(batch.Deps{
 		Items: st, Publisher: sqspub.New(cfg, h.queue), Policy: rules.NewPolicy(), Emitter: discard{}, MaxCustomers: size,
 	})
@@ -92,9 +94,14 @@ func (h *harness) want(resp events.APIGatewayV2HTTPResponse, code int, body stri
 	}
 }
 
-func (h *harness) attempts() []batch.Attempt {
+// attempts relays the stream, as the relay's event source mapping would, and
+// receives the queued events it published.
+func (h *harness) attempts() []batch.ItemEvent {
 	h.t.Helper()
-	return flocitest.Decode[batch.Attempt](h.t, flocitest.Receive(h.t, h.cfg, h.queue))
+	if _, err := ddb.NewRelay(h.batch).Handle(h.t.Context(), h.stream.Next()); err != nil {
+		h.t.Fatal(err)
+	}
+	return flocitest.Decode[batch.ItemEvent](h.t, flocitest.Receive(h.t, h.cfg, h.queue))
 }
 
 // submit posts threeCustomers and returns the accepted batch.
@@ -283,14 +290,13 @@ func TestRecoveryRoutes(t *testing.T) {
 	items := "/batches/" + id + "/items/"
 
 	h.want(h.do("POST", items+acc.ItemIDs[1]+"/retry", ""), http.StatusConflict, `{"error":"invalid_transition"}`)
-	h.faults.DropEntries(1)
-	h.want(h.do("POST", items+failed+"/retry", ""), http.StatusServiceUnavailable, `{"error":"enqueue_failed"}`)
-	h.want(h.do("POST", items+failed+"/retry", ""), http.StatusAccepted, `{"attempts":3,"item_id":"`+failed+`"}`)
+	h.want(h.do("POST", items+failed+"/retry", ""), http.StatusAccepted, `{"attempts":2,"item_id":"`+failed+`"}`)
+	h.want(h.do("POST", items+failed+"/retry", ""), http.StatusConflict, `{"error":"invalid_transition"}`)
 	h.want(h.do("POST", items+failed+"/cancel", ""), http.StatusConflict, `{"error":"invalid_transition"}`)
 	h.want(h.do("POST", "/batches/"+id+"/retry-failed", ""), http.StatusAccepted, `{"requeued":0}`)
 
 	a := h.attempts()
-	if len(a) != 1 || a[0].Number != 3 {
+	if len(a) != 1 || a[0].Attempt != 2 || a[0].ItemID != failed {
 		t.Fatalf("attempts=%+v", a)
 	}
 	if err := h.batch.DeadLetter(t.Context(), a[0]); err != nil {

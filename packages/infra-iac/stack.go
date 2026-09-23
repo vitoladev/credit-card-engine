@@ -45,6 +45,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		},
 		BillingMode:   awsdynamodb.BillingMode_PAY_PER_REQUEST,
 		Encryption:    awsdynamodb.TableEncryption_AWS_MANAGED,
+		Stream:        awsdynamodb.StreamViewType_NEW_IMAGE,
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 
@@ -59,13 +60,25 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		},
 	})
 
+	// The HTTP Lambda only writes items: it has no access to the queue.
 	fn := goLambda(stack, functionID, "EvaluateLogs", "http", map[string]*string{
 		"DECISIONS_TABLE": table.TableName(),
-		"QUEUE_URL":       queue.QueueUrl(),
 		"BATCH_SIZE":      jsii.String(size),
 	}, flociEvaluateConcurrency)
 	table.GrantReadWriteData(fn)
-	queue.GrantSendMessages(fn)
+
+	// The relay turns the table's stream into queue messages (ADR 0004). The
+	// event source grants the stream read; the relay reads no rows.
+	relay := goLambda(stack, relayFunctionID, "RelayLogs", "relay", map[string]*string{
+		"QUEUE_URL": queue.QueueUrl(),
+	}, flociRelayConcurrency)
+	queue.GrantSendMessages(relay)
+	relay.AddEventSource(awslambdaeventsources.NewDynamoEventSource(table, &awslambdaeventsources.DynamoEventSourceProps{
+		StartingPosition:        awslambda.StartingPosition_TRIM_HORIZON,
+		BatchSize:               jsii.Number(streamBatchSize),
+		BisectBatchOnError:      jsii.Bool(true),
+		ReportBatchItemFailures: jsii.Bool(true),
+	}))
 	worker := goLambda(stack, workerFunctionID, "WorkerLogs", "worker", map[string]*string{
 		"DECISIONS_TABLE": table.TableName(),
 	}, flociWorkerConcurrency)
@@ -130,7 +143,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		},
 	})
 
-	wireObservability(stack, fn, worker, dlqConsumer, api, dlq)
+	wireObservability(stack, fn, worker, dlqConsumer, relay, api, dlq)
 
 	awscdk.NewCfnOutput(stack, jsii.String("ApiUrl"), &awscdk.CfnOutputProps{
 		Value: stage.Url(),

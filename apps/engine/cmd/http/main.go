@@ -11,7 +11,6 @@ import (
 	"engine/internal/adapter/awsconfig"
 	"engine/internal/adapter/ddb"
 	"engine/internal/adapter/httpapi"
-	"engine/internal/adapter/sqspub"
 	"engine/internal/adapter/telemetry"
 	"engine/internal/batch"
 	"engine/internal/evaluate"
@@ -29,9 +28,8 @@ func main() {
 
 func compose(ctx context.Context) (httpapi.Handler, error) {
 	table := os.Getenv("DECISIONS_TABLE")
-	queueURL := os.Getenv("QUEUE_URL")
-	if table == "" || queueURL == "" {
-		return httpapi.Handler{}, errors.New("DECISIONS_TABLE and QUEUE_URL required")
+	if table == "" {
+		return httpapi.Handler{}, errors.New("DECISIONS_TABLE required")
 	}
 	batchSize, err := batch.ParseBatchSize(os.Getenv("BATCH_SIZE"))
 	if err != nil {
@@ -45,7 +43,6 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 	policy := rules.NewPolicy()
 	b := batch.New(batch.Deps{
 		Items:        st,
-		Publisher:    sqspub.New(cfg, queueURL),
 		Policy:       policy,
 		Emitter:      telemetry.EMF{},
 		MaxCustomers: batchSize,

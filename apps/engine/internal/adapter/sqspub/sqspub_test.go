@@ -17,14 +17,13 @@ import (
 
 	"engine/internal/adapter/sqspub"
 	"engine/internal/batch"
-	"engine/internal/domain"
 	"engine/internal/flocitest"
 )
 
-func attempts(n int) []batch.Attempt {
-	out := make([]batch.Attempt, n)
+func attempts(n int) []batch.ItemEvent {
+	out := make([]batch.ItemEvent, n)
 	for i := range out {
-		out[i] = batch.Attempt{BatchID: "b1", ItemID: uuid.NewV7().String(), Number: 1, Customer: domain.Customer{Name: "Ana", CPF: "39053344705"}}
+		out[i] = batch.NewItemEvent("b1", uuid.NewV7().String(), 1, batch.Queued)
 	}
 	return out
 }
@@ -39,8 +38,8 @@ func TestPublishSendsEveryAttempt(t *testing.T) {
 	}
 
 	var got []string
-	for _, a := range flocitest.Decode[batch.Attempt](t, flocitest.Receive(t, cfg, url)) {
-		if a.BatchID != "b1" || a.Number != 1 || a.Customer.CPF != "39053344705" {
+	for _, a := range flocitest.Decode[batch.ItemEvent](t, flocitest.Receive(t, cfg, url)) {
+		if a.BatchID != "b1" || a.Attempt != 1 || a.Status != batch.Queued || a.ID == "" {
 			t.Fatalf("%+v", a)
 		}
 		got = append(got, a.ItemID)
@@ -51,10 +50,18 @@ func TestPublishSendsEveryAttempt(t *testing.T) {
 	}
 }
 
-func itemIDs(attempts []batch.Attempt) []string {
-	out := make([]string, len(attempts))
-	for i, a := range attempts {
-		out[i] = a.ItemID
+func itemIDs(itemEvents []batch.ItemEvent) []string {
+	out := make([]string, len(itemEvents))
+	for i, e := range itemEvents {
+		out[i] = e.ItemID
+	}
+	return out
+}
+
+func eventIDs(itemEvents []batch.ItemEvent) []string {
+	out := make([]string, len(itemEvents))
+	for i, e := range itemEvents {
+		out[i] = e.ID
 	}
 	return out
 }
@@ -66,7 +73,7 @@ func TestPublishReturnsEveryFailedItem(t *testing.T) {
 	sent := attempts(25)
 	failed, err := sqspub.New(cfg, missing).Publish(t.Context(), sent)
 	slices.Sort(failed)
-	if err == nil || !slices.Equal(failed, itemIDs(sent)) {
+	if err == nil || !slices.Equal(failed, eventIDs(sent)) {
 		t.Fatalf("failed=%v err=%v", failed, err)
 	}
 }
@@ -78,10 +85,10 @@ func TestPublishReturnsTheEntriesSQSRejected(t *testing.T) {
 	sent := attempts(3)
 	failed, err := sqspub.New(cfg, url).Publish(t.Context(), sent)
 	slices.Sort(failed)
-	if err == nil || !slices.Equal(failed, itemIDs(sent[:2])) {
+	if err == nil || !slices.Equal(failed, eventIDs(sent[:2])) {
 		t.Fatalf("failed=%v err=%v", failed, err)
 	}
-	if got := flocitest.Decode[batch.Attempt](t, flocitest.Receive(t, cfg, url)); len(got) != 1 || got[0].ItemID != sent[2].ItemID {
+	if got := flocitest.Decode[batch.ItemEvent](t, flocitest.Receive(t, cfg, url)); len(got) != 1 || got[0].ItemID != sent[2].ItemID {
 		t.Fatalf("received %+v", got)
 	}
 }
@@ -124,7 +131,7 @@ func TestPublishDeliversTheTraceHeaderOnTheMessage(t *testing.T) {
 
 // capturedBatch returns the SendMessageBatch request Publish builds, without
 // sending it.
-func capturedBatch(t *testing.T, attempts []batch.Attempt) *sqs.SendMessageBatchInput {
+func capturedBatch(t *testing.T, attempts []batch.ItemEvent) *sqs.SendMessageBatchInput {
 	t.Helper()
 	var got *sqs.SendMessageBatchInput
 	cfg, err := config.LoadDefaultConfig(t.Context(),

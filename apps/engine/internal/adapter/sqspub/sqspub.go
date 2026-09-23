@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -30,9 +31,10 @@ func New(cfg aws.Config, queueURL string) *Publisher {
 	return &Publisher{client: sqs.NewFromConfig(cfg), url: queueURL}
 }
 
-// Publish sends the attempts in chunks of 10, several chunks at once. A chunk that
-// fails as a whole fails every attempt in it.
-func (p *Publisher) Publish(ctx context.Context, attempts []batch.Attempt) ([]string, error) {
+// Publish sends the events in chunks of 10, several chunks at once, and
+// returns the IDs of the events it did not send. A chunk that fails as a whole
+// fails every event in it.
+func (p *Publisher) Publish(ctx context.Context, itemEvents []batch.ItemEvent) ([]string, error) {
 	var (
 		mu     sync.Mutex
 		failed []string
@@ -40,8 +42,8 @@ func (p *Publisher) Publish(ctx context.Context, attempts []batch.Attempt) ([]st
 		wg     sync.WaitGroup
 	)
 	sem := make(chan struct{}, inFlight)
-	for start := 0; start < len(attempts); start += chunkSize {
-		chunk := attempts[start:min(start+chunkSize, len(attempts))]
+	for start := 0; start < len(itemEvents); start += chunkSize {
+		chunk := itemEvents[start:min(start+chunkSize, len(itemEvents))]
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
@@ -60,16 +62,18 @@ func (p *Publisher) Publish(ctx context.Context, attempts []batch.Attempt) ([]st
 	return failed, errors.Join(errs...)
 }
 
-func (p *Publisher) send(ctx context.Context, chunk []batch.Attempt) ([]string, error) {
+// send publishes one chunk. Entry IDs are positions in the chunk: an event ID
+// holds ':', which SQS does not accept in an entry ID.
+func (p *Publisher) send(ctx context.Context, chunk []batch.ItemEvent) ([]string, error) {
 	trace := traceHeader()
 	entries := make([]types.SendMessageBatchRequestEntry, 0, len(chunk))
-	for _, a := range chunk {
-		body, err := json.Marshal(a)
+	for i, e := range chunk {
+		body, err := json.Marshal(e)
 		if err != nil {
-			return itemIDs(chunk), err
+			return eventIDs(chunk), err
 		}
 		entries = append(entries, types.SendMessageBatchRequestEntry{
-			Id:                      new(a.ItemID),
+			Id:                      new(strconv.Itoa(i)),
 			MessageBody:             new(string(body)),
 			MessageSystemAttributes: trace,
 		})
@@ -79,23 +83,26 @@ func (p *Publisher) send(ctx context.Context, chunk []batch.Attempt) ([]string, 
 		Entries:  entries,
 	})
 	if err != nil {
-		return itemIDs(chunk), fmt.Errorf("send message batch: %w", err)
+		return eventIDs(chunk), fmt.Errorf("send message batch: %w", err)
 	}
 	if len(out.Failed) == 0 {
 		return nil, nil
 	}
-	failed := make([]string, len(out.Failed))
-	for i, f := range out.Failed {
-		failed[i] = aws.ToString(f.Id)
+	failed := make([]string, 0, len(out.Failed))
+	for _, f := range out.Failed {
+		i, err := strconv.Atoi(aws.ToString(f.Id))
+		if err != nil || i < 0 || i >= len(chunk) {
+			return eventIDs(chunk), fmt.Errorf("unexpected entry id %q", aws.ToString(f.Id))
+		}
+		failed = append(failed, chunk[i].ID)
 	}
 	return failed, fmt.Errorf("send message batch: %d entries failed, first code %s", len(out.Failed), aws.ToString(out.Failed[0].Code))
 }
 
-// itemIDs is also each entry's Id: SendMessageBatch reports failures by it.
-func itemIDs(attempts []batch.Attempt) []string {
-	out := make([]string, len(attempts))
-	for i, a := range attempts {
-		out[i] = a.ItemID
+func eventIDs(itemEvents []batch.ItemEvent) []string {
+	out := make([]string, len(itemEvents))
+	for i, e := range itemEvents {
+		out[i] = e.ID
 	}
 	return out
 }

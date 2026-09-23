@@ -13,7 +13,7 @@ import (
 // Consumer hands each record's attempt to handle and lists only the records
 // that failed, so SQS redelivers those and keeps the rest.
 type Consumer struct {
-	handle func(context.Context, batch.Attempt) error
+	handle func(context.Context, batch.ItemEvent) error
 	// ackMalformed acknowledges a record that is not an attempt instead of
 	// reporting it.
 	ackMalformed bool
@@ -35,7 +35,7 @@ func DeadLetters(b batch.Module) Consumer {
 func (c Consumer) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEventResponse, error) {
 	var resp events.SQSEventResponse
 	for _, rec := range ev.Records {
-		a, err := batch.ParseAttempt(rec.Body)
+		a, err := batch.ParseItemEvent(rec.Body)
 		if err != nil && c.ackMalformed {
 			continue
 		}
@@ -52,10 +52,10 @@ func (c Consumer) Handle(ctx context.Context, ev events.SQSEvent) (events.SQSEve
 
 // failRecord logs the ids of a failed record, never its body: the body holds
 // the full CPF and the name.
-func failRecord(rec events.SQSMessage, err error, a batch.Attempt) {
+func failRecord(rec events.SQSMessage, err error, a batch.ItemEvent) {
 	attrs := []any{slog.String("message_id", rec.MessageId), slog.String("error", err.Error())}
 	if a.BatchID != "" {
-		attrs = append(attrs, slog.String("batch_id", a.BatchID), slog.String("item_id", a.ItemID))
+		attrs = append(attrs, slog.String("batch_id", a.BatchID), slog.String("item_id", a.ItemID), slog.Int("attempt", a.Attempt))
 	}
 	slog.Error("record_failed", attrs...)
 }

@@ -45,8 +45,10 @@ var rules = []rule{
 		from: "internal/adapter/telemetry", to: []string{"internal/evaluate", "internal/batch", "internal/rules", "internal/adapter"}},
 	{name: "cmd imports the test helper",
 		from: "cmd", to: []string{"internal/flocitest"}},
-	{name: "cmd/http imports the queue consumer",
-		from: "cmd/http", to: []string{"internal/adapter/sqs"}},
+	{name: "cmd/http imports the queue consumer or the publisher",
+		from: "cmd/http", to: []string{"internal/adapter/sqs", "internal/adapter/sqspub"}},
+	{name: "cmd/relay imports httpapi, evaluate, or the queue consumer",
+		from: "cmd/relay", to: []string{"internal/adapter/httpapi", "internal/evaluate", "internal/adapter/sqs"}},
 	{name: "cmd/worker imports httpapi, evaluate, or the publisher",
 		from: "cmd/worker", to: []string{"internal/adapter/httpapi", "internal/evaluate", "internal/adapter/sqspub"}},
 	{name: "cmd/dlq imports httpapi, evaluate, rules, or the publisher",
@@ -158,7 +160,8 @@ func TestFixtureBatchImportingAWSFails(t *testing.T) {
 
 func TestFixtureAllowedEdgesStayClean(t *testing.T) {
 	fixture := Graph{
-		modulePrefix + "/cmd/http":                   {modulePrefix + "/internal/adapter/httpapi", modulePrefix + "/internal/adapter/ddb", modulePrefix + "/internal/adapter/sqspub", modulePrefix + "/internal/adapter/telemetry", modulePrefix + "/internal/batch", modulePrefix + "/internal/evaluate", modulePrefix + "/internal/rules"},
+		modulePrefix + "/cmd/http":                   {modulePrefix + "/internal/adapter/httpapi", modulePrefix + "/internal/adapter/ddb", modulePrefix + "/internal/adapter/telemetry", modulePrefix + "/internal/batch", modulePrefix + "/internal/evaluate", modulePrefix + "/internal/rules"},
+		modulePrefix + "/cmd/relay":                  {modulePrefix + "/internal/adapter/ddb", modulePrefix + "/internal/adapter/sqspub", modulePrefix + "/internal/batch"},
 		modulePrefix + "/cmd/worker":                 {modulePrefix + "/internal/adapter/sqs", modulePrefix + "/internal/adapter/ddb", modulePrefix + "/internal/adapter/telemetry", modulePrefix + "/internal/batch", modulePrefix + "/internal/rules"},
 		modulePrefix + "/cmd/dlq":                    {modulePrefix + "/internal/adapter/sqs", modulePrefix + "/internal/adapter/ddb", modulePrefix + "/internal/adapter/telemetry", modulePrefix + "/internal/batch"},
 		modulePrefix + "/internal/adapter/httpapi":   {modulePrefix + "/internal/evaluate", modulePrefix + "/internal/batch", modulePrefix + "/internal/domain"},

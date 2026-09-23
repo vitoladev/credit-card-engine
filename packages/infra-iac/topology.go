@@ -12,11 +12,13 @@ const (
 	queueID          = "EvaluationJobs"
 	dlqID            = "EvaluationJobsDLQ"
 	dlqFunctionID    = "DlqConsumer"
+	relayFunctionID  = "Relay"
 	apiID            = "Api"
 	tableID          = "Decisions"
 	alarmID          = "EvaluateAlarms"
 
 	// Generic keys: one table holds DECISION# rows and BATCH# item rows.
+	// Its stream (NEW_IMAGE) feeds the relay, the outbox of ADR 0004.
 	tablePartitionKey = "pk"
 	tableSortKey      = "sk"
 
@@ -35,6 +37,11 @@ const (
 	maxReceiveCount  = 3
 	dlqRetentionDays = 14
 	sqsBatchSize     = 10
+	// The relay reads the table stream in batches of this size. A record
+	// that keeps failing is retried until it expires (24 h); the IteratorAge
+	// alarm fires long before that.
+	streamBatchSize    = 100
+	iteratorAgeAlarmMs = 60_000
 
 	lambdaTimeoutS = 3
 	lambdaMemoryMB = 256
@@ -45,6 +52,7 @@ const (
 	flociEvaluateConcurrency = 8
 	flociWorkerConcurrency   = 4
 	flociDlqConcurrency      = 2
+	flociRelayConcurrency    = 2
 
 	metricsNamespace = "CreditCardEngine"
 	dashboardName    = "CreditCardEngine"

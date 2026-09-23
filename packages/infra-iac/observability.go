@@ -9,7 +9,7 @@ import (
 	"github.com/aws/jsii-runtime-go"
 )
 
-func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer awslambda.IFunction, api awsapigatewayv2.HttpApi, dlq awssqs.IQueue) {
+func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslambda.IFunction, api awsapigatewayv2.HttpApi, dlq awssqs.IQueue) {
 	minute := awscdk.Duration_Minutes(jsii.Number(1))
 	alarmOnSum(stack, "Api5xx", "API Gateway 5xx ≥ 1 in 1 minute", api.MetricServerError, api5xxAlarmThreshold)
 	alarmOnSum(stack, "WorkerErrors", "Worker Lambda errors ≥ 1 in 1 minute", worker.MetricErrors, workerErrorAlarmThreshold)
@@ -21,6 +21,18 @@ func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer awslambda.IFu
 		Threshold:          jsii.Number(dlqVisibleAlarmThreshold),
 		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
 		EvaluationPeriods:  jsii.Number(dlqVisibleEvaluationPeriods),
+		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
+	})
+	// A queued item waits on the relay: a growing iterator age means items
+	// stay QUEUED with no message behind them.
+	relay.Metric(jsii.String("IteratorAge"), &awscloudwatch.MetricOptions{
+		Statistic: jsii.String("Maximum"),
+		Period:    minute,
+	}).CreateAlarm(stack, jsii.String("RelayIteratorAge"), &awscloudwatch.CreateAlarmOptions{
+		AlarmDescription:   jsii.String("Relay stream iterator age over 60 s for 3 minutes"),
+		Threshold:          jsii.Number(iteratorAgeAlarmMs),
+		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
+		EvaluationPeriods:  jsii.Number(3),
 		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
 	})
 	fn.MetricDuration(&awscloudwatch.MetricOptions{

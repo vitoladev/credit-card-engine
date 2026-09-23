@@ -53,7 +53,7 @@ func statuses(t *testing.T, b batch.Module) []batch.ItemStatus {
 	return out
 }
 
-func record(t *testing.T, id string, a batch.Attempt) events.SQSMessage {
+func record(t *testing.T, id string, a batch.ItemEvent) events.SQSMessage {
 	t.Helper()
 	body, err := json.Marshal(a)
 	if err != nil {
@@ -82,10 +82,10 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 func TestWorkerReportsOnlyTheFailedRecords(t *testing.T) {
 	b, faults, id := newBatch(t)
 	ev := events.SQSEvent{Records: []events.SQSMessage{
-		record(t, "a", batch.Attempt{BatchID: "b1", ItemID: id[1], Number: 1, Customer: ana}), // the store fails
-		record(t, "b", batch.Attempt{BatchID: "b1", ItemID: id[0], Number: 1, Customer: ana}), // decided
-		record(t, "c", batch.Attempt{BatchID: "b1", ItemID: id[0], Number: 1, Customer: ana}), // redelivery
-		record(t, "d", batch.Attempt{BatchID: "nope", ItemID: id[0], Number: 1, Customer: ana}),
+		record(t, "a", batch.NewItemEvent("b1", id[1], 1, batch.Queued)), // the store fails
+		record(t, "b", batch.NewItemEvent("b1", id[0], 1, batch.Queued)), // decided
+		record(t, "c", batch.NewItemEvent("b1", id[0], 1, batch.Queued)), // redelivery
+		record(t, "d", batch.NewItemEvent("nope", id[0], 1, batch.Queued)),
 		{MessageId: "e", Body: "not json"},
 	}}
 	faults.FailCalls("UpdateItem", 1)
@@ -104,9 +104,9 @@ func TestWorkerReportsOnlyTheFailedRecords(t *testing.T) {
 func TestDeadLettersFailTheItemAndAcknowledgePoison(t *testing.T) {
 	b, faults, id := newBatch(t)
 	ev := events.SQSEvent{Records: []events.SQSMessage{
-		record(t, "a", batch.Attempt{BatchID: "b1", ItemID: id[0], Number: 1, Customer: ana}), // the store fails
-		record(t, "b", batch.Attempt{BatchID: "b1", ItemID: id[1], Number: 1, Customer: ana}), // failed
-		record(t, "c", batch.Attempt{BatchID: "nope", ItemID: id[0], Number: 1, Customer: ana}),
+		record(t, "a", batch.NewItemEvent("b1", id[0], 1, batch.Queued)), // the store fails
+		record(t, "b", batch.NewItemEvent("b1", id[1], 1, batch.Queued)), // failed
+		record(t, "c", batch.NewItemEvent("nope", id[0], 1, batch.Queued)),
 		{MessageId: "d", Body: "not json"},
 	}}
 	faults.FailCalls("UpdateItem", 1)
@@ -135,7 +135,7 @@ func TestFailedRecordsAreLoggedWithoutCustomerData(t *testing.T) {
 			b, faults, id := newBatch(t)
 			faults.FailCalls("UpdateItem", 1)
 			resp, err := tc.consumer(b).Handle(t.Context(), events.SQSEvent{Records: []events.SQSMessage{
-				record(t, "m1", batch.Attempt{BatchID: "b1", ItemID: id[0], Number: 1, Customer: ana}),
+				record(t, "m1", batch.NewItemEvent("b1", id[0], 1, batch.Queued)),
 			}})
 			if err != nil || failures(resp) != "m1" {
 				t.Fatalf("resp=%+v err=%v", resp, err)

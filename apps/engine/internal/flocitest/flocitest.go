@@ -11,12 +11,15 @@ import (
 	"testing"
 	"uuid"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsmiddleware "github.com/aws/aws-sdk-go-v2/aws/middleware"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	ddbtypes "github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodbstreams"
+	streamtypes "github.com/aws/aws-sdk-go-v2/service/dynamodbstreams/types"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/aws/smithy-go/middleware"
@@ -151,8 +154,8 @@ func (f *Faults) dropEntries(stack *middleware.Stack) error {
 		}), middleware.After)
 }
 
-// Table creates the engine's single table (pk, sk) and deletes it when the
-// test ends.
+// Table creates the engine's single table (pk, sk) with its stream (NEW_IMAGE)
+// on, as the stack declares it, and deletes it when the test ends.
 func Table(t *testing.T, cfg aws.Config) string {
 	t.Helper()
 	client := dynamodb.NewFromConfig(cfg)
@@ -167,6 +170,10 @@ func Table(t *testing.T, cfg aws.Config) string {
 		KeySchema: []ddbtypes.KeySchemaElement{
 			{AttributeName: new("pk"), KeyType: ddbtypes.KeyTypeHash},
 			{AttributeName: new("sk"), KeyType: ddbtypes.KeyTypeRange},
+		},
+		StreamSpecification: &ddbtypes.StreamSpecification{
+			StreamEnabled:  new(true),
+			StreamViewType: ddbtypes.StreamViewTypeNewImage,
 		},
 	})
 	if err != nil {
@@ -259,4 +266,95 @@ func Decode[T any](t *testing.T, msgs []Message) []T {
 		}
 	}
 	return out
+}
+
+// Stream reads a table's stream from its start, the way the relay's event
+// source mapping does, and hands each new record to the test as a Lambda
+// event.
+type Stream struct {
+	t         *testing.T
+	client    *dynamodbstreams.Client
+	arn       string
+	iterators map[string]*string
+}
+
+func TableStream(t *testing.T, cfg aws.Config, table string) *Stream {
+	t.Helper()
+	out, err := dynamodb.NewFromConfig(cfg).DescribeTable(t.Context(), &dynamodb.DescribeTableInput{TableName: new(table)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Stream{t: t, client: dynamodbstreams.NewFromConfig(cfg), arn: aws.ToString(out.Table.LatestStreamArn), iterators: map[string]*string{}}
+}
+
+// Next returns the records written since the last call, oldest first per shard.
+func (s *Stream) Next() events.DynamoDBEvent {
+	s.t.Helper()
+	desc, err := s.client.DescribeStream(s.t.Context(), &dynamodbstreams.DescribeStreamInput{StreamArn: new(s.arn)})
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	var ev events.DynamoDBEvent
+	for _, shard := range desc.StreamDescription.Shards {
+		id := aws.ToString(shard.ShardId)
+		var records []events.DynamoDBEventRecord
+		records, s.iterators[id] = s.read(s.iterator(id))
+		ev.Records = append(ev.Records, records...)
+	}
+	return ev
+}
+
+// iterator is where the shard was left, or its start on the first read.
+func (s *Stream) iterator(shardID string) *string {
+	if it, ok := s.iterators[shardID]; ok {
+		return it
+	}
+	out, err := s.client.GetShardIterator(s.t.Context(), &dynamodbstreams.GetShardIteratorInput{
+		StreamArn: new(s.arn), ShardId: new(shardID), ShardIteratorType: streamtypes.ShardIteratorTypeTrimHorizon,
+	})
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return out.ShardIterator
+}
+
+// read takes every record after it and returns the iterator to continue from.
+func (s *Stream) read(it *string) ([]events.DynamoDBEventRecord, *string) {
+	var records []events.DynamoDBEventRecord
+	for it != nil {
+		out, err := s.client.GetRecords(s.t.Context(), &dynamodbstreams.GetRecordsInput{ShardIterator: it})
+		if err != nil {
+			s.t.Fatal(err)
+		}
+		for _, r := range out.Records {
+			records = append(records, s.record(r))
+		}
+		it = out.NextShardIterator
+		if len(out.Records) == 0 {
+			break
+		}
+	}
+	return records, it
+}
+
+func (s *Stream) record(r streamtypes.Record) events.DynamoDBEventRecord {
+	img := map[string]events.DynamoDBAttributeValue{}
+	for k, v := range r.Dynamodb.NewImage {
+		switch v := v.(type) {
+		case *streamtypes.AttributeValueMemberS:
+			img[k] = events.NewStringAttribute(v.Value)
+		case *streamtypes.AttributeValueMemberN:
+			img[k] = events.NewNumberAttribute(v.Value)
+		default:
+			s.t.Fatalf("stream attribute %s has an unhandled type %T", k, v)
+		}
+	}
+	return events.DynamoDBEventRecord{
+		EventID:   aws.ToString(r.EventID),
+		EventName: string(r.EventName),
+		Change: events.DynamoDBStreamRecord{
+			NewImage:       img,
+			SequenceNumber: aws.ToString(r.Dynamodb.SequenceNumber),
+		},
+	}
 }

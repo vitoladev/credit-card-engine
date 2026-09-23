@@ -6,6 +6,8 @@ import (
 	"slices"
 	"testing"
 
+	"engine/internal/adapter/ddb"
+	"engine/internal/batch"
 	"engine/internal/flocitest"
 )
 
@@ -117,10 +119,16 @@ func TestBatchWithInvalidCustomerPublishesNothing(t *testing.T) {
 	}
 }
 
-func TestBatchPublishesNormalizedCPF(t *testing.T) {
+func TestBatchStoresNormalizedCPF(t *testing.T) {
 	h := newHarness(t)
-	h.want(h.do("POST", "/evaluations/batch", `[`+customerJSON(t, func(map[string]any) {})+`]`), http.StatusAccepted, "")
-	if a := h.attempts(); len(a) != 1 || a[0].Customer.CPF != "39053344705" {
-		t.Fatalf("%+v", a)
+	resp := h.do("POST", "/evaluations/batch", `[`+customerJSON(t, func(map[string]any) {})+`]`)
+	h.want(resp, http.StatusAccepted, "")
+	var acc batch.Accepted
+	if err := json.Unmarshal([]byte(resp.Body), &acc); err != nil {
+		t.Fatal(err)
+	}
+	it, err := ddb.New(h.cfg, h.table).Item(t.Context(), acc.BatchID, acc.ItemIDs[0])
+	if err != nil || it.Customer.CPF != "39053344705" {
+		t.Fatalf("item=%+v err=%v", it, err)
 	}
 }

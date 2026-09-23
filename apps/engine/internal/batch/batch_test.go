@@ -11,6 +11,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-sdk-go-v2/aws"
 
 	"engine/internal/adapter/ddb"
@@ -54,9 +55,9 @@ func (r *recorder) ItemFailed(batchID, itemID string, attempt int) {
 	r.failed = append(r.failed, itemEvent{batchID: batchID, itemID: itemID, attempt: attempt})
 }
 
-// harness is the batch module over DynamoDB and SQS on Floci. Tests read the
-// queue themselves and hand each attempt to Process or DeadLetter, the way the
-// worker and DLQ consumer would.
+// harness is the batch module over DynamoDB, its stream, and SQS on Floci.
+// Tests move the stream into the relay and the queue into Process or
+// DeadLetter themselves, the way the event source mappings would.
 type harness struct {
 	t      *testing.T
 	b      batch.Module
@@ -64,6 +65,7 @@ type harness struct {
 	faults *flocitest.Faults
 	table  string
 	queue  string
+	stream *flocitest.Stream
 	emit   *recorder
 }
 
@@ -75,6 +77,7 @@ func newHarnessWithBatchSize(t *testing.T, size int) *harness {
 	t.Helper()
 	cfg, faults := flocitest.Config(t)
 	h := &harness{t: t, cfg: cfg, faults: faults, table: flocitest.Table(t, cfg), queue: flocitest.Queue(t, cfg), emit: &recorder{}}
+	h.stream = flocitest.TableStream(t, cfg, h.table)
 	h.b = batch.New(batch.Deps{
 		Items:        ddb.New(cfg, h.table),
 		Publisher:    sqspub.New(cfg, h.queue),
@@ -94,20 +97,59 @@ func (h *harness) submit(customers []domain.Customer) batch.Accepted {
 	return acc
 }
 
-// take receives every published attempt, in submission order: item IDs are
-// version 7 UUIDs, which sort in the order they were made.
-func (h *harness) take() []batch.Attempt {
+// relay hands the stream records written since the last call to the relay,
+// as its event source mapping would, and returns its response.
+func (h *harness) relay() (events.DynamoDBEvent, events.DynamoDBEventResponse) {
 	h.t.Helper()
-	attempts := flocitest.Decode[batch.Attempt](h.t, flocitest.Receive(h.t, h.cfg, h.queue))
-	slices.SortFunc(attempts, func(x, y batch.Attempt) int { return strings.Compare(x.ItemID, y.ItemID) })
-	return attempts
+	ev := h.stream.Next()
+	resp, err := ddb.NewRelay(h.b).Handle(h.t.Context(), ev)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return ev, resp
 }
 
-func (h *harness) process(attempts ...batch.Attempt) {
+// take relays the stream and receives every queued event, in submission
+// order: item IDs are version 7 UUIDs, which sort in the order they were made.
+func (h *harness) take() []batch.ItemEvent {
 	h.t.Helper()
-	for _, a := range attempts {
-		if err := h.b.Process(h.t.Context(), a); err != nil {
-			h.t.Fatalf("process %+v: %v", a, err)
+	if _, resp := h.relay(); len(resp.BatchItemFailures) != 0 {
+		h.t.Fatalf("relay failures=%+v", resp.BatchItemFailures)
+	}
+	return h.receive()
+}
+
+func (h *harness) receive() []batch.ItemEvent {
+	h.t.Helper()
+	msgs := flocitest.Receive(h.t, h.cfg, h.queue)
+	for _, m := range msgs {
+		for _, c := range threeCustomers {
+			if strings.Contains(m.Body, c.CPF) || strings.Contains(m.Body, c.Name) {
+				h.t.Fatalf("queue message carries customer data: %s", m.Body)
+			}
+		}
+	}
+	got := flocitest.Decode[batch.ItemEvent](h.t, msgs)
+	slices.SortFunc(got, func(x, y batch.ItemEvent) int { return strings.Compare(x.ItemID, y.ItemID) })
+	return got
+}
+
+func (h *harness) process(itemEvents ...batch.ItemEvent) {
+	h.t.Helper()
+	for _, e := range itemEvents {
+		if err := h.b.Process(h.t.Context(), e); err != nil {
+			h.t.Fatalf("process %+v: %v", e, err)
+		}
+	}
+}
+
+// deadLetter fails the items of the events, as the DLQ consumer would once each
+// exhausted its deliveries.
+func (h *harness) deadLetter(itemEvents ...batch.ItemEvent) {
+	h.t.Helper()
+	for _, e := range itemEvents {
+		if err := h.b.DeadLetter(h.t.Context(), e); err != nil {
+			h.t.Fatal(err)
 		}
 	}
 }
@@ -115,8 +157,8 @@ func (h *harness) process(attempts ...batch.Attempt) {
 func (h *harness) drain() { h.t.Helper(); h.process(h.take()...) }
 
 // failThroughDLQ makes the store fail on every one of the maxReceiveCount=3
-// deliveries of the attempt, then dead-letters it, as SQS would.
-func (h *harness) failThroughDLQ(a batch.Attempt) {
+// deliveries of the event, then dead-letters it, as SQS would.
+func (h *harness) failThroughDLQ(a batch.ItemEvent) {
 	h.t.Helper()
 	h.faults.FailCalls("UpdateItem", 3)
 	for range 3 {
@@ -131,7 +173,7 @@ func (h *harness) failThroughDLQ(a batch.Attempt) {
 
 // failedBatch submits threeCustomers, fails the first item through the DLQ,
 // and decides the other two.
-func (h *harness) failedBatch() (batch.Accepted, batch.Attempt) {
+func (h *harness) failedBatch() (batch.Accepted, batch.ItemEvent) {
 	h.t.Helper()
 	acc := h.submit(threeCustomers)
 	attempts := h.take()
@@ -201,8 +243,11 @@ func TestSubmittedBatchCompletes(t *testing.T) {
 		t.Fatalf("%+v", acc)
 	}
 	attempts := h.take()
-	if len(attempts) != 3 || attempts[0].Number != 1 || attempts[0].BatchID != acc.BatchID || attempts[0].Customer.CPF != "39053344705" {
+	if len(attempts) != 3 || attempts[0] != batch.NewItemEvent(acc.BatchID, acc.ItemIDs[0], 1, batch.Queued) {
 		t.Fatalf("%+v", attempts)
+	}
+	if want := acc.BatchID + ":" + acc.ItemIDs[0] + ":1:QUEUED"; attempts[0].ID != want {
+		t.Fatalf("event_id=%s want %s", attempts[0].ID, want)
 	}
 	for i, a := range attempts {
 		if a.ItemID != acc.ItemIDs[i] {
@@ -316,7 +361,7 @@ func TestRetryAtMaxAttemptsIsRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 		attempts := h.take()
-		if len(attempts) != 1 || attempts[0].Number != attempt || attempts[0].Customer.CPF != first.Customer.CPF {
+		if len(attempts) != 1 || attempts[0].Attempt != attempt || attempts[0].ItemID != first.ItemID {
 			t.Fatalf("attempt %d: %+v", attempt, attempts)
 		}
 		h.failThroughDLQ(attempts[0])
@@ -403,55 +448,95 @@ func TestUnknownTargetsAreNotFound(t *testing.T) {
 
 func second[T any](_ T, err error) error { return err }
 
-func TestPublishFailuresOnSubmitAreFailedThenRetriedTogether(t *testing.T) {
+// A publish that fails in the relay leaves the item queued: the stream
+// delivers the record again, and nothing is failed for a transient error.
+func TestRelayPublishFailureIsDeliveredAgain(t *testing.T) {
 	h := newHarness(t)
-	h.faults.DropEntries(2)
 	acc := h.submit(threeCustomers)
-	if acc.Queued != 1 {
-		t.Fatalf("%+v", acc)
+
+	h.faults.DropEntries(2)
+	ev, resp := h.relay()
+	if len(resp.BatchItemFailures) != 2 {
+		t.Fatalf("failures=%+v", resp.BatchItemFailures)
 	}
-	// Every queued item must have a message behind it.
-	wantStatuses(t, h.items(acc.BatchID), batch.Failed, batch.Failed, batch.Queued)
-	if len(h.emit.failed) != 2 || h.emit.failed[0].attempt != 1 || h.emit.failed[0].itemID != acc.ItemIDs[0] {
+	wantStatuses(t, h.items(acc.BatchID), batch.Queued, batch.Queued, batch.Queued)
+	if len(h.emit.failed) != 0 || len(h.receive()) != 1 {
 		t.Fatalf("failed events=%+v", h.emit.failed)
 	}
-	h.drain()
-	wantStatuses(t, h.items(acc.BatchID), batch.Failed, batch.Failed, batch.Approved)
 
-	if n, err := h.b.RetryFailed(t.Context(), acc.BatchID); n != 2 || err != nil {
-		t.Fatalf("requeued=%d err=%v", n, err)
+	// The event source mapping delivers the batch again from the failed records.
+	resp, err := ddb.NewRelay(h.b).Handle(t.Context(), ev)
+	if err != nil || len(resp.BatchItemFailures) != 0 {
+		t.Fatalf("resp=%+v err=%v", resp, err)
 	}
-	h.drain()
-	got := h.items(acc.BatchID)
-	wantStatuses(t, got, batch.Approved, batch.Denied, batch.Approved)
-	if got[0].Attempts != 2 {
-		t.Fatalf("%+v", got)
+	h.process(h.receive()...)
+	wantStatuses(t, h.items(acc.BatchID), batch.Approved, batch.Denied, batch.Approved)
+}
+
+// Only a move to QUEUED is work. Decisions, failures, and cancels reach the
+// relay too and publish nothing.
+func TestRelayPublishesOnlyQueuedItems(t *testing.T) {
+	h := newHarness(t)
+	acc, first := h.failedBatch()
+	if got := h.take(); len(got) != 0 {
+		t.Fatalf("published %+v", got)
+	}
+	if err := h.b.Cancel(t.Context(), acc.BatchID, acc.ItemIDs[1]); !errors.Is(err, batch.ErrInvalidTransition) {
+		t.Fatal(err)
+	}
+	if _, err := h.b.Retry(t.Context(), acc.BatchID, first.ItemID); err != nil {
+		t.Fatal(err)
+	}
+	got := h.take()
+	if len(got) != 1 || got[0] != batch.NewItemEvent(acc.BatchID, first.ItemID, 2, batch.Queued) {
+		t.Fatalf("published %+v", got)
 	}
 }
 
-func TestRetryFailedCountsOnlyPublishedItems(t *testing.T) {
+// A late event for an older attempt finds the item queued on a newer one and
+// is acknowledged without deciding it.
+func TestStaleEventDoesNotDecide(t *testing.T) {
 	h := newHarness(t)
-	h.faults.DropEntries(3)
-	acc := h.submit(threeCustomers)
-	if acc.Queued != 0 {
-		t.Fatalf("%+v", acc)
+	acc, first := h.failedBatch()
+	if _, err := h.b.Retry(t.Context(), acc.BatchID, first.ItemID); err != nil {
+		t.Fatal(err)
 	}
-
-	h.faults.DropEntries(1)
-	if n, err := h.b.RetryFailed(t.Context(), acc.BatchID); n != 2 || err != nil {
-		t.Fatalf("requeued=%d err=%v", n, err)
-	}
+	h.process(first)
 	got := h.items(acc.BatchID)
-	wantStatuses(t, got, batch.Failed, batch.Queued, batch.Queued)
-	if len(h.take()) != 2 || got[0].Attempts != 2 {
-		t.Fatalf("%+v", got)
+	if got[0].Status != batch.Queued || got[0].Attempts != 2 {
+		t.Fatalf("items[0]=%+v", got[0])
+	}
+	h.drain()
+	if got := h.items(acc.BatchID); got[0].Status != batch.Approved || got[0].Attempts != 2 {
+		t.Fatalf("items[0]=%+v", got[0])
 	}
 }
 
-func TestRetryFailedReportsAStoreErrorAndPublishesWhatMoved(t *testing.T) {
+func TestRetryFailedMovesEveryFailedItem(t *testing.T) {
 	h := newHarness(t)
-	h.faults.DropEntries(3)
 	acc := h.submit(threeCustomers)
+	h.deadLetter(h.take()...)
+	wantStatuses(t, h.items(acc.BatchID), batch.Failed, batch.Failed, batch.Failed)
+
+	if n, err := h.b.RetryFailed(t.Context(), acc.BatchID); n != 3 || err != nil {
+		t.Fatalf("requeued=%d err=%v", n, err)
+	}
+	got := h.take()
+	if len(got) != 3 || got[0].Attempt != 2 {
+		t.Fatalf("published %+v", got)
+	}
+	h.process(got...)
+	entries := h.items(acc.BatchID)
+	wantStatuses(t, entries, batch.Approved, batch.Denied, batch.Approved)
+	if entries[0].Attempts != 2 {
+		t.Fatalf("%+v", entries)
+	}
+}
+
+func TestRetryFailedReportsAStoreErrorAndCountsWhatMoved(t *testing.T) {
+	h := newHarness(t)
+	acc := h.submit(threeCustomers)
+	h.deadLetter(h.take()...)
 
 	h.faults.FailCalls("UpdateItem", 1)
 	n, err := h.b.RetryFailed(t.Context(), acc.BatchID)
@@ -469,28 +554,6 @@ func TestRetryFailedReportsAStoreErrorAndPublishesWhatMoved(t *testing.T) {
 	}
 }
 
-func TestRetryPublishFailureFailsTheItemAgain(t *testing.T) {
-	h := newHarness(t)
-	acc, first := h.failedBatch()
-	id := acc.BatchID
-
-	h.faults.DropEntries(1)
-	if _, err := h.b.Retry(t.Context(), id, first.ItemID); !errors.Is(err, batch.ErrEnqueueFailed) {
-		t.Fatalf("err=%v", err)
-	}
-	got := h.items(id)
-	wantStatuses(t, got, batch.Failed, batch.Denied, batch.Approved)
-	if got[0].Attempts != 2 {
-		t.Fatalf("%+v", got)
-	}
-	if len(h.take()) != 0 {
-		t.Fatal("published a retry that failed")
-	}
-	if len(h.emit.failed) != 2 || h.emit.failed[1].attempt != 2 {
-		t.Fatalf("failed events=%+v", h.emit.failed)
-	}
-}
-
 // An attempt whose item does not exist can never succeed. Process keeps
 // failing it so it reaches the DLQ, and DeadLetter acknowledges it instead of
 // failing it forever.
@@ -498,9 +561,9 @@ func TestAttemptForAMissingItemIsDroppedByDeadLetter(t *testing.T) {
 	h := newHarness(t)
 	id := h.submit(threeCustomers).BatchID
 	attempts := h.take()
-	for _, a := range []batch.Attempt{
-		{BatchID: "nope", ItemID: attempts[0].ItemID, Number: 1, Customer: attempts[0].Customer},
-		{BatchID: id, ItemID: uuid.NewV7().String(), Number: 1, Customer: attempts[0].Customer},
+	for _, a := range []batch.ItemEvent{
+		batch.NewItemEvent("nope", attempts[0].ItemID, 1, batch.Queued),
+		batch.NewItemEvent(id, uuid.NewV7().String(), 1, batch.Queued),
 	} {
 		if err := h.b.Process(t.Context(), a); !errors.Is(err, batch.ErrNotFound) {
 			t.Fatalf("process %+v: err=%v", a, err)
@@ -509,10 +572,10 @@ func TestAttemptForAMissingItemIsDroppedByDeadLetter(t *testing.T) {
 			t.Fatalf("dead letter %+v: err=%v", a, err)
 		}
 	}
-	if err := h.b.Process(t.Context(), batch.Attempt{}); err == nil {
+	if err := h.b.Process(t.Context(), batch.ItemEvent{}); err == nil {
 		t.Fatal("processed an attempt with no batch")
 	}
-	if err := h.b.DeadLetter(t.Context(), batch.Attempt{}); err != nil {
+	if err := h.b.DeadLetter(t.Context(), batch.ItemEvent{}); err != nil {
 		t.Fatalf("dead letter with no batch: err=%v", err)
 	}
 	wantStatuses(t, h.items(id), batch.Queued, batch.Queued, batch.Queued)
@@ -669,8 +732,8 @@ func TestListItemsRejectsACursorItDidNotIssue(t *testing.T) {
 // any item moves.
 func TestRetryFailedStopsOnAFailedRead(t *testing.T) {
 	h := newHarness(t)
-	h.faults.DropEntries(3)
 	acc := h.submit(threeCustomers)
+	h.deadLetter(h.take()...)
 
 	h.faults.FailCalls("Query", 1)
 	if _, err := h.b.RetryFailed(t.Context(), acc.BatchID); !errors.Is(err, flocitest.ErrInjected) {

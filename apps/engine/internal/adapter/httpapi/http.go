@@ -123,13 +123,9 @@ func (h Handler) enqueue(ctx context.Context, req events.APIGatewayV2HTTPRequest
 	if errors.Is(err, batch.ErrTooLarge) {
 		return jsonResp(422, map[string]any{"error": "batch_too_large", "max": h.batch.MaxCustomers()}), nil
 	}
-	if errors.Is(err, batch.ErrNotRecorded) {
-		log5xx(err)
-		return jsonResp(503, map[string]string{"error": "batch_not_recorded"}), nil
-	}
 	if err != nil {
 		log5xx(err)
-		return jsonResp(503, map[string]string{"error": "enqueue_failed"}), nil
+		return jsonResp(503, map[string]string{"error": "batch_not_recorded"}), nil
 	}
 	return jsonResp(202, acc), nil
 }
@@ -184,9 +180,6 @@ func recoveryErr(err error) events.APIGatewayV2HTTPResponse {
 		return jsonResp(409, map[string]string{"error": "invalid_transition"})
 	case errors.Is(err, batch.ErrMaxAttempts):
 		return jsonResp(409, map[string]string{"error": "max_attempts_reached"})
-	case errors.Is(err, batch.ErrEnqueueFailed):
-		log5xx(err)
-		return jsonResp(503, map[string]string{"error": "enqueue_failed"})
 	default:
 		log5xx(err)
 		return jsonResp(503, map[string]string{"error": "store_failed"})
