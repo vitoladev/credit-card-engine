@@ -6,13 +6,14 @@ import (
 	"github.com/aws/aws-cdk-go/awscdk/v2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awsapigatewayv2"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awscloudwatch"
+	"github.com/aws/aws-cdk-go/awscdk/v2/awsdynamodb"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslambda"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awslogs"
 	"github.com/aws/aws-cdk-go/awscdk/v2/awssqs"
 	"github.com/aws/jsii-runtime-go"
 )
 
-func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslambda.Function, api awsapigatewayv2.HttpApi, queue, dlq awssqs.IQueue) {
+func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslambda.Function, api awsapigatewayv2.HttpApi, queue, dlq awssqs.IQueue, items awsdynamodb.Table) {
 	minute := awscdk.Duration_Minutes(jsii.Number(1))
 	alarmOnSum(stack, "Api5xx", "API Gateway 5xx ≥ 1 in 1 minute", api.MetricServerError, api5xxAlarmThreshold)
 	alarmOnSum(stack, "WorkerErrors", "Worker Lambda errors ≥ 1 in 1 minute", worker.MetricErrors, workerErrorAlarmThreshold)
@@ -65,6 +66,23 @@ func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslam
 	alarmOnLog(stack, "RelaySkippedRecords", "Relay skipped an unreadable stream record", relay.LogGroup(), "stream_record_skipped")
 	alarmOnLog(stack, "EvaluateStoreBookkeeping", "Batch rollback or idempotency key write failed",
 		fn.LogGroup(), "batch_rollback_failed", "idempotency_complete_failed", "idempotency_release_failed")
+	// A batch's items share one partition key. One large batch submitted or
+	// decided faster than a partition takes (1,000 writes a second) throttles;
+	// the store retries, so throttling shows as latency first (ADR 0007).
+	awscloudwatch.NewAlarm(stack, jsii.String("BatchItemsThrottled"), &awscloudwatch.AlarmProps{
+		AlarmDescription: jsii.String("BatchItems throttled requests in 3 consecutive minutes"),
+		Metric: items.MetricThrottledRequestsForOperations(&awsdynamodb.OperationsMetricOptions{
+			Operations: &[]awsdynamodb.Operation{
+				awsdynamodb.Operation_BATCH_WRITE_ITEM, awsdynamodb.Operation_UPDATE_ITEM,
+				awsdynamodb.Operation_GET_ITEM, awsdynamodb.Operation_QUERY,
+			},
+			Period: minute,
+		}),
+		Threshold:          jsii.Number(1),
+		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+		EvaluationPeriods:  jsii.Number(3),
+		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
+	})
 	fn.MetricDuration(&awscloudwatch.MetricOptions{
 		Statistic: jsii.String("p99"),
 		Period:    minute,

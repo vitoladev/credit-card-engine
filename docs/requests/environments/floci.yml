@@ -1,0 +1,15 @@
+name: floci
+description: The stack on Floci in the Dev Container. Set apiId to the id in `make api-url`.
+variables:
+- name: apiId
+  value: REPLACE_WITH_API_ID
+- name: baseUrl
+  value: http://localhost:4566/_aws/execute-api/{{apiId}}/$default
+- name: awsAccessKeyId
+  value: test
+- name: awsSecretAccessKey
+  value: test
+- name: awsSessionToken
+  value: ''
+- name: awsRegion
+  value: us-east-1

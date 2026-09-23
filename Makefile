@@ -1,4 +1,4 @@
-.PHONY: test synth floci-up floci-down floci-reap local-bootstrap local-deploy local-redeploy local-destroy api-url loadtest
+.PHONY: requests test synth floci-up floci-down floci-reap local-bootstrap local-deploy local-redeploy local-destroy api-url loadtest
 
 COMPOSE := docker compose -f .devcontainer/docker-compose.yml
 
@@ -44,3 +44,7 @@ api-url:
 
 loadtest:
 	. scripts/floci.env && BASE_URL="$$(bash scripts/api-url.sh)" bash scripts/with-floci-reap.sh npx turbo run loadtest --filter=loadtest
+
+# Runs docs/requests (OpenCollection) with the Bruno CLI against the local stack.
+requests:
+	. scripts/floci.env && cd docs/requests && npx --yes @usebruno/cli@4.2.0 run -r --env floci --env-var "baseUrl=$$(cd ../.. && bash scripts/api-url.sh)"

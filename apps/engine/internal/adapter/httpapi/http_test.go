@@ -46,7 +46,7 @@ type harness struct {
 	batch  batch.Module
 	cfg    aws.Config
 	faults *flocitest.Faults
-	table  string
+	tables flocitest.Tables
 	queue  string
 	stream *flocitest.Stream
 }
@@ -58,13 +58,16 @@ func newHarness(t *testing.T) *harness {
 func newHarnessWithBatchSize(t *testing.T, size int) *harness {
 	t.Helper()
 	cfg, faults := flocitest.Config(t)
-	h := &harness{t: t, cfg: cfg, faults: faults, table: flocitest.Table(t, cfg), queue: flocitest.Queue(t, cfg)}
-	st := ddb.New(cfg, h.table)
-	h.stream = flocitest.TableStream(t, cfg, h.table)
+	h := &harness{t: t, cfg: cfg, faults: faults, tables: flocitest.CreateTables(t, cfg), queue: flocitest.Queue(t, cfg)}
+	h.stream = flocitest.TableStream(t, cfg, h.tables.Items)
 	h.batch = batch.New(batch.Deps{
-		Items: st, Publisher: sqspub.New(cfg, h.queue), Policy: rules.NewPolicy(), Emitter: discard{}, MaxCustomers: size,
+		Items: ddb.NewItems(cfg, h.tables.Items), Publisher: sqspub.New(cfg, h.queue), Policy: rules.NewPolicy(), Emitter: discard{}, MaxCustomers: size,
 	})
-	h.http = httpapi.New(evaluate.New(rules.NewPolicy(), st, discard{}), h.batch, idempotency.New(ddb.NewKeys(st)))
+	h.http = httpapi.New(
+		evaluate.New(rules.NewPolicy(), ddb.NewDecisions(cfg, h.tables.Decisions), discard{}),
+		h.batch,
+		idempotency.New(ddb.NewKeys(cfg, h.tables.Keys)),
+	)
 	return h
 }
 
@@ -179,7 +182,7 @@ func TestSingleEvaluationRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp.Body), &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.DecisionID == "" || created.Decision != domain.Approved || created.CPFMasked != "***05" {
+	if created.DecisionID == "" || created.Decision != domain.Approved || created.CPFMasked != "390.***.***-05" {
 		t.Fatalf("body=%s", resp.Body)
 	}
 	h.want(h.do("GET", "/evaluations/"+created.DecisionID, ""), http.StatusOK, resp.Body)
@@ -194,7 +197,7 @@ func TestSingleEvaluationFailsClosedWith503(t *testing.T) {
 	h := newHarness(t)
 	h.faults.FailCalls("PutItem", 1)
 	h.want(h.do("POST", "/evaluations", customerJSON(t, func(map[string]any) {})), http.StatusServiceUnavailable, `{"error":"decision_not_recorded"}`)
-	if n := flocitest.Rows(t, h.cfg, h.table); n != 0 {
+	if n := flocitest.Rows(t, h.cfg, h.tables.All()...); n != 0 {
 		t.Fatalf("rows=%d", n)
 	}
 	logs := buf.String()

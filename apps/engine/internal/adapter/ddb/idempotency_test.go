@@ -6,11 +6,16 @@ import (
 	"time"
 	"uuid"
 
-	"github.com/aws/aws-lambda-go/events"
-
 	"engine/internal/adapter/ddb"
+	"engine/internal/flocitest"
 	"engine/internal/idempotency"
 )
+
+func newKeys(t *testing.T) ddb.Keys {
+	t.Helper()
+	cfg, _ := flocitest.Config(t)
+	return ddb.NewKeys(cfg, flocitest.CreateTables(t, cfg).Keys)
+}
 
 func claimAt(fp string, now time.Time) idempotency.Claim {
 	return idempotency.Claim{
@@ -32,7 +37,7 @@ func claim(t *testing.T, k ddb.Keys, key string, c idempotency.Claim) (idempoten
 }
 
 func TestAPendingKeyIsHeldUntilItsLeaseEnds(t *testing.T) {
-	k := ddb.NewKeys(newStore(t).Store)
+	k := newKeys(t)
 	now := time.Now()
 	first := claimAt("fp", now)
 	if _, ok := claim(t, k, "key", first); !ok {
@@ -58,7 +63,7 @@ func TestAPendingKeyIsHeldUntilItsLeaseEnds(t *testing.T) {
 }
 
 func TestACompletedKeyReplaysUntilItExpires(t *testing.T) {
-	k := ddb.NewKeys(newStore(t).Store)
+	k := newKeys(t)
 	now := time.Now()
 	c := claimAt("fp", now)
 	claim(t, k, "key", c)
@@ -79,7 +84,7 @@ func TestACompletedKeyReplaysUntilItExpires(t *testing.T) {
 }
 
 func TestAReleasedKeyCanBeClaimedAgain(t *testing.T) {
-	k := ddb.NewKeys(newStore(t).Store)
+	k := newKeys(t)
 	c := claimAt("fp", time.Now())
 	claim(t, k, "key", c)
 	if err := k.Release(t.Context(), "key", c.Owner); err != nil {
@@ -92,7 +97,7 @@ func TestAReleasedKeyCanBeClaimedAgain(t *testing.T) {
 
 // Claims that race on one key: DynamoDB's condition lets exactly one win.
 func TestRacingClaimsHaveOneWinner(t *testing.T) {
-	k := ddb.NewKeys(newStore(t).Store)
+	k := newKeys(t)
 	now := time.Now()
 	var (
 		wg   sync.WaitGroup
@@ -116,18 +121,5 @@ func TestRacingClaimsHaveOneWinner(t *testing.T) {
 	wg.Wait()
 	if wins != 1 {
 		t.Fatalf("wins=%d", wins)
-	}
-}
-
-func TestTheRelaySkipsKeyRows(t *testing.T) {
-	rec := events.DynamoDBEventRecord{
-		EventName: string(events.DynamoDBOperationTypeInsert),
-		Change: events.DynamoDBStreamRecord{NewImage: map[string]events.DynamoDBAttributeValue{
-			"pk": events.NewStringAttribute("IDEMPOTENCY#key"),
-			"sk": events.NewStringAttribute("KEY"),
-		}},
-	}
-	if _, ok, err := ddb.ItemEventFrom(rec); ok || err != nil {
-		t.Fatalf("ok=%v err=%v", ok, err)
 	}
 }

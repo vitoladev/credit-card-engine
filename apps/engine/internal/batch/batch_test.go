@@ -67,7 +67,7 @@ type harness struct {
 	b      batch.Module
 	cfg    aws.Config
 	faults *flocitest.Faults
-	table  string
+	tables flocitest.Tables
 	queue  string
 	stream *flocitest.Stream
 	emit   *recorder
@@ -80,10 +80,10 @@ func newHarness(t *testing.T) *harness {
 func newHarnessWithBatchSize(t *testing.T, size int) *harness {
 	t.Helper()
 	cfg, faults := flocitest.Config(t)
-	h := &harness{t: t, cfg: cfg, faults: faults, table: flocitest.Table(t, cfg), queue: flocitest.Queue(t, cfg), emit: &recorder{}}
-	h.stream = flocitest.TableStream(t, cfg, h.table)
+	h := &harness{t: t, cfg: cfg, faults: faults, tables: flocitest.CreateTables(t, cfg), queue: flocitest.Queue(t, cfg), emit: &recorder{}}
+	h.stream = flocitest.TableStream(t, cfg, h.tables.Items)
 	h.b = batch.New(batch.Deps{
-		Items:        ddb.New(cfg, h.table),
+		Items:        ddb.NewItems(cfg, h.tables.Items),
 		Publisher:    sqspub.New(cfg, h.queue),
 		Policy:       rules.NewPolicy(),
 		Emitter:      h.emit,
@@ -262,7 +262,7 @@ func TestSubmittedBatchCompletes(t *testing.T) {
 
 	got := h.items(acc.BatchID)
 	wantStatuses(t, got, batch.Approved, batch.Denied, batch.Approved)
-	want := batch.Entry{ItemID: acc.ItemIDs[0], Name: "Ana", CPFMasked: "***05", Status: batch.Approved, Reasons: []string{"eligible"}, RevolvingAmountCents: 250_000, Attempts: 1}
+	want := batch.Entry{ItemID: acc.ItemIDs[0], Name: "Ana", CPFMasked: "390.***.***-05", Status: batch.Approved, Reasons: []string{"eligible"}, RevolvingAmountCents: 250_000, Attempts: 1}
 	if !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("items[0]=%+v", got[0])
 	}
@@ -316,7 +316,7 @@ func TestSubmitOverTheLimitStoresAndPublishesNothing(t *testing.T) {
 	if _, err := h.b.Submit(t.Context(), threeCustomers); !errors.Is(err, batch.ErrTooLarge) {
 		t.Fatalf("err=%v", err)
 	}
-	if n := flocitest.Rows(t, h.cfg, h.table); n != 0 || len(h.take()) != 0 {
+	if n := flocitest.Rows(t, h.cfg, h.tables.All()...); n != 0 || len(h.take()) != 0 {
 		t.Fatalf("rows=%d", n)
 	}
 	if acc := h.submit(threeCustomers[:2]); acc.Queued != 2 {
@@ -330,7 +330,7 @@ func TestSubmitStoreFailurePublishesNothing(t *testing.T) {
 	if _, err := h.b.Submit(t.Context(), threeCustomers); !errors.Is(err, batch.ErrNotRecorded) {
 		t.Fatalf("err=%v", err)
 	}
-	if n := flocitest.Rows(t, h.cfg, h.table); n != 0 || len(h.take()) != 0 {
+	if n := flocitest.Rows(t, h.cfg, h.tables.All()...); n != 0 || len(h.take()) != 0 {
 		t.Fatalf("stored or published a batch that was not recorded: rows=%d", n)
 	}
 }
@@ -342,7 +342,7 @@ func TestFailedItemIsRetriedToCompletion(t *testing.T) {
 
 	got := h.items(id)
 	wantStatuses(t, got, batch.Failed, batch.Denied, batch.Approved)
-	if f := got[0]; f.ItemID != first.ItemID || f.CPFMasked != "***05" || f.Attempts != 1 || len(f.Reasons) != 0 {
+	if f := got[0]; f.ItemID != first.ItemID || f.CPFMasked != "390.***.***-05" || f.Attempts != 1 || len(f.Reasons) != 0 {
 		t.Fatalf("items[0]=%+v", f)
 	}
 	if len(h.emit.failed) != 1 || !reflect.DeepEqual(h.emit.failed[0], itemEvent{batchID: id, itemID: first.ItemID, attempt: 1}) {
@@ -403,7 +403,7 @@ func TestCancelFailedItemIsIdempotent(t *testing.T) {
 	}
 	got := h.items(id)
 	wantStatuses(t, got, batch.Cancelled, batch.Denied, batch.Approved)
-	if got[0].ItemID != first.ItemID || got[0].CPFMasked != "***05" {
+	if got[0].ItemID != first.ItemID || got[0].CPFMasked != "390.***.***-05" {
 		t.Fatalf("items[0]=%+v", got[0])
 	}
 	if _, err := h.b.Retry(t.Context(), id, first.ItemID); !errors.Is(err, batch.ErrInvalidTransition) {

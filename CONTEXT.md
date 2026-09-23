@@ -59,7 +59,8 @@ belongs to a batch.
 
 **Batch**:
 A list of customers submitted together for asynchronous evaluation. It is
-accepted whole or rejected whole.
+accepted whole or rejected whole. It has no status. Each batch item has a
+status.
 
 **Report**:
 The list of a batch's items, read page by page: each item with its status and
@@ -94,7 +95,7 @@ queue message.
 _Avoid_: Job
 
 **Item event**:
-One status change of a batch item, read from the table's stream: batch, item,
+One status change of a batch item, read from the `BatchItems` stream: batch, item,
 attempt, and status, with no customer data. The events that queue an item are
 the queue's messages.
 _Avoid_: Job, command

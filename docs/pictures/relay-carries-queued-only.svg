@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" role="img" aria-labelledby="t d">
+  <title id="t">The relay publishes QUEUED records only</title>
+  <desc id="d">The relay sends a QUEUED stream record to SQS. An APPROVED stream record is marked drop and is not published.</desc>
+  <rect width="1200" height="640" fill="#f3ead8"/>
+  <g transform="translate(40 280)">
+    <rect width="230" height="170" rx="12" fill="#eef2f7" stroke="#1b1612" stroke-width="5" stroke-dasharray="12 10"/>
+    <text x="16" y="36" font-size="20" font-family="ui-sans-serif, sans-serif" fill="#6f6458">stream record</text>
+    <rect x="20" y="56" width="190" height="58" rx="8" fill="#2d6a4f"/>
+    <text x="115" y="94" text-anchor="middle" font-size="22" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#fff8ee">APPROVED</text>
+    <line x1="14" y1="18" x2="216" y2="152" stroke="#9b2226" stroke-width="10"/>
+    <line x1="216" y1="18" x2="14" y2="152" stroke="#9b2226" stroke-width="10"/>
+    <text x="115" y="210" text-anchor="middle" font-size="24" font-family="ui-sans-serif, sans-serif" fill="#9b2226">ack, no message</text>
+  </g>
+  <g transform="translate(300 130)">
+    <circle cx="80" cy="60" r="44" fill="#c4a574" stroke="#1b1612" stroke-width="5"/>
+    <rect x="42" y="110" width="76" height="150" rx="24" fill="#3d4f66" stroke="#1b1612" stroke-width="5"/>
+    <text x="80" y="310" text-anchor="middle" font-size="28" font-family="ui-sans-serif, sans-serif" fill="#1b1612">relay</text>
+  </g>
+  <g transform="translate(470 80)">
+    <rect width="260" height="200" rx="12" fill="#eef2f7" stroke="#1b1612" stroke-width="5" stroke-dasharray="12 10"/>
+    <text x="20" y="40" font-size="20" font-family="ui-sans-serif, sans-serif" fill="#6f6458">stream record</text>
+    <rect x="30" y="70" width="200" height="70" rx="10" fill="#e2b84a"/>
+    <text x="130" y="114" text-anchor="middle" font-size="26" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#1b1612">QUEUED</text>
+  </g>
+  <polygon points="750,155 750,215 820,185" fill="#1b1612"/>
+  <g transform="translate(850 80)">
+    <rect width="280" height="360" rx="14" fill="#9b2226" stroke="#1b1612" stroke-width="8"/>
+    <text x="140" y="170" text-anchor="middle" fill="#fff8ee" font-size="32" font-family="ui-sans-serif, sans-serif">SQS</text>
+    <text x="140" y="214" text-anchor="middle" fill="#f3ead8" font-size="22" font-family="ui-sans-serif, sans-serif">EvaluationJobs</text>
+  </g>
+  <text x="600" y="560" text-anchor="middle" font-size="34" font-family="Georgia, serif" fill="#1b1612">The relay publishes QUEUED. Other records are dropped.</text>
+</svg>

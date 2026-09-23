@@ -1,0 +1,22 @@
+info:
+  name: 'Malformed JSON: 400'
+  type: http
+  seq: 2
+http:
+  method: POST
+  url: '{{baseUrl}}/evaluations'
+  auth: inherit
+  body:
+    type: json
+    data: '{"name":'
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '400'
+  scripts:
+  - type: tests
+    code: |-
+      test("Malformed JSON: 400", function () {
+        expect(res.body.error).to.equal("invalid_json");
+      });

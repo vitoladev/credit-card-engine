@@ -4,6 +4,7 @@ A revolving-credit rules engine in Go. CDK in Go describes the HTTP API,
 Lambda, SQS, and DynamoDB.
 
 The cut, the rules, and the API are in [Architecture](docs/architecture.md).
+[How a batch moves](docs/architecture.md#how-a-batch-moves) is the batch path.
 You do not need an AWS account: everything runs on Floci, a local AWS
 emulator, inside a Dev Container.
 
@@ -28,6 +29,10 @@ k6. Dummy credentials (`test` / `test`) are already in the environment.
 Compose starts Floci.
 
 ### Call the API
+
+To send every use case from an HTTP client, open `docs/requests` in Bruno.
+It is an OpenCollection with sample customers; see
+[docs/requests/README.md](docs/requests/README.md).
 
 ```bash
 BASE="$(make -s api-url)"
@@ -117,10 +122,13 @@ curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$
 
 Each item has its `item_id`, a masked CPF, its `status` (`QUEUED`,
 `APPROVED`, `DENIED`, `FAILED`, or `CANCELLED`), `reasons`,
-`revolving_amount_cents`, and `attempts`, in submission order. To read the
+`revolving_amount_cents`, and `attempts`, in submission order. A batch has
+no status. `FAILED` is an item the DLQ consumer marked. When
+`?status=QUEUED` returns items, the worker has not decided them yet. When
+`?limit=1&status=QUEUED` returns no items, every item has left `QUEUED`.
+`?status=FAILED` lists items an operator retries or cancels. To read the
 next page, pass `next_cursor` as `?cursor=`. The last page has no
-`next_cursor`. To list one status only, add `?status=FAILED`. The batch is
-done when `?limit=1&status=QUEUED` returns no items.
+`next_cursor`.
 
 With more than one query parameter, write them in alphabetical order
 (`cursor`, `limit`, `status`). The curl in the Dev Container (7.88) signs the
@@ -192,9 +200,10 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 |---|---|
 | `make test` | `turbo run test` for the engine, the Lambdas, and the stack. Then reaps Floci Lambda containers this stack left behind. |
 | `make loadtest` | k6 against `POST /evaluations/batch` on a local deploy. `LOADTEST_PATH=single` targets `POST /evaluations` instead. `LOADTEST_BATCH_CUSTOMERS=3-5` sends 3 to 5 customers per batch, at random. |
+| `make requests` | Runs the HTTP collection in `docs/requests` (OpenCollection, for Bruno) against the local stack. |
 | `make local-bootstrap` | CDK bootstrap on Floci account `000000000000`. |
 | `make local-deploy` | `cdklocal deploy`. Works once per stack on Floci. |
-| `make local-redeploy` | `local-destroy` then `local-deploy`. Use it to deploy a change: Floci cannot update the relay's stream event source mapping in place. The table starts empty. |
+| `make local-redeploy` | `local-destroy` then `local-deploy`. Use it to deploy a change: Floci cannot update the relay's stream event source mapping in place. The tables start empty. |
 | `make api-url` | Prints the HTTP API base URL on the emulator. |
 | `make synth` | `cdk synth` (template, no deploy). |
 | `make floci-up` and `make floci-down` | Only the `floci` service from `.devcontainer/docker-compose.yml`. No-op inside the Dev Container. |
@@ -203,7 +212,7 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 `make loadtest` runs k6 at `LOADTEST_RATE` req/s (default 100) for
 `LOADTEST_DURATION` (default 10 s), then removes the Floci Lambda containers,
 whether the run passed or failed. [docs/loadtest.md](docs/loadtest.md) has
-every setting, the results, and the commands for a real AWS stack.
+every setting, the results on Floci, and what limits them.
 
 ## What a local run does not prove
 
@@ -212,12 +221,16 @@ Floci differs from AWS in ways that change what a local run shows:
 - Floci serves about 10 Lambda invocations a second in total, so a local
   `make loadtest` reaches about 10 req/s whatever `LOADTEST_RATE` asks for.
 - Its CloudFormation ignores point-in-time recovery, the SQS batching window,
-  and the table's TTL, and it stubs log metric filters. The CDK tests assert
-  all four in the template. Expired idempotency keys stay in the table on
+  and the `IdempotencyKeys` TTL, and it stubs log metric filters. The CDK tests assert
+  all four in the template. Expired idempotency keys stay in their table on
   Floci, but the claim's condition treats them as absent, so keys still
   expire after 24 hours.
+- A `Query` whose `ExclusiveStartKey` names an item that no longer exists
+  restarts from the first item on Floci. DynamoDB continues after the key.
+  So a `?status=` cursor whose item changed status between two pages can
+  repeat items locally.
 - A failed update can leave an API, functions, event source mappings, and a
-  table behind. `make api-url` asks the stack for its own API, so it never
+  tables behind. `make api-url` asks the stack for its own API, so it never
   picks a leftover one.
 
 ## Layout
@@ -226,6 +239,6 @@ Floci differs from AWS in ways that change what a local run shows:
 apps/engine/          The evaluate, batch, and idempotency modules, the rules, and the http, relay, worker, and dlq commands
 packages/infra-iac/   CDK in Go
 packages/loadtest/    k6 load test for both evaluation routes
-docs/                 architecture.md, loadtest.md, CODING_STANDARDS.md, and the ADRs in adr/
+docs/                 architecture.md, pictures/, loadtest.md, CODING_STANDARDS.md, the ADRs in adr/, and the HTTP collection in requests/
 CONTEXT.md            The glossary: the name of each domain concept
 ```

@@ -115,13 +115,13 @@ func oneLine(t *testing.T, buf *bytes.Buffer) map[string]any {
 func TestEvaluatedApprovalWritesOneApprovedLine(t *testing.T) {
 	buf := captureLogs(t)
 	telemetry.EMF{}.Evaluated("d1", domain.Result{
-		Name: "Ana", CPFMasked: "***05", Decision: domain.Approved, RevolvingAmountCents: 250_000, Reasons: []string{"eligible"},
+		Name: "Ana", CPFMasked: "390.***.***-05", Decision: domain.Approved, RevolvingAmountCents: 250_000, Reasons: []string{"eligible"},
 	}, 3*time.Millisecond)
 	got := oneLine(t, buf)
 	if !hasMetric(got, "Approved") || got["Approved"] != 1.0 || !hasMetric(got, "DecisionLatencyMs") || got["DecisionLatencyMs"] != 3.0 {
 		t.Fatalf("%v", got)
 	}
-	if got["decision"] != "APPROVED" || got["reason"] != "eligible" || got["cpf_masked"] != "***05" || got["decision_id"] != "d1" {
+	if got["decision"] != "APPROVED" || got["reason"] != "eligible" || got["cpf_masked"] != "390.***.***-05" || got["decision_id"] != "d1" {
 		t.Fatalf("%v", got)
 	}
 	if _, ok := got["batch_id"]; ok {
@@ -138,7 +138,7 @@ func TestEvaluatedApprovalWritesOneApprovedLine(t *testing.T) {
 func TestItemDenialWritesDeniedAndDenyByReason(t *testing.T) {
 	buf := captureLogs(t)
 	telemetry.EMF{}.ItemDecided("b1", "0198f3a2-7c1e-7b3a-9d2f-4e5a6b7c8d90", domain.Result{
-		Name: "Bruno", CPFMasked: "***09", Decision: domain.Denied, Reasons: []string{"score_below_600"},
+		Name: "Bruno", CPFMasked: "123.***.***-09", Decision: domain.Denied, Reasons: []string{"score_below_600"},
 	}, time.Millisecond, 1500*time.Millisecond)
 	got := oneLine(t, buf)
 	if !hasMetric(got, "ItemEndToEndMs") || got["ItemEndToEndMs"] != 1500.0 {
@@ -150,7 +150,7 @@ func TestItemDenialWritesDeniedAndDenyByReason(t *testing.T) {
 	if !hasMetric(got, "DenyByReason") || got["DenyByReason"] != 1.0 || got["reason"] != "score_below_600" || !denyReasonDimension(got) {
 		t.Fatalf("%v", got)
 	}
-	if got["batch_id"] != "b1" || got["item_id"] != "0198f3a2-7c1e-7b3a-9d2f-4e5a6b7c8d90" || got["cpf_masked"] != "***09" {
+	if got["batch_id"] != "b1" || got["item_id"] != "0198f3a2-7c1e-7b3a-9d2f-4e5a6b7c8d90" || got["cpf_masked"] != "123.***.***-09" {
 		t.Fatalf("%v", got)
 	}
 	if bytes.Contains(buf.Bytes(), []byte("Bruno")) {

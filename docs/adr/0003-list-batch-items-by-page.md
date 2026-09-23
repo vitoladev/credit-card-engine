@@ -4,6 +4,10 @@ status: accepted
 
 # List a batch's items by page, with no batch-level status or totals
 
+> Partly superseded by [ADR 0007](0007-list-items-by-status-from-an-index.md):
+> a list by status reads a global secondary index instead of filtering the
+> batch's items.
+
 The batch report was one response with four lists (`approved`, `denied`,
 `failed`, `cancelled`), a `counters` object, a derived batch status, and
 `total_revolving_amount_cents`. An item was known by its index in the

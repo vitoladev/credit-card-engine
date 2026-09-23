@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,12 +19,12 @@ func TestStackHasTheDayZeroSurface(t *testing.T) {
 	stack := NewStack(app, "Test", nil)
 	template := assertions.Template_FromStack(stack, nil)
 
-	template.ResourceCountIs(jsii.String("AWS::DynamoDB::Table"), jsii.Number(1))
+	template.ResourceCountIs(jsii.String("AWS::DynamoDB::Table"), jsii.Number(3))
 	template.ResourceCountIs(jsii.String("AWS::ApiGatewayV2::Api"), jsii.Number(1))
 	template.ResourceCountIs(jsii.String("AWS::ApiGatewayV2::Stage"), jsii.Number(1))
 	template.ResourceCountIs(jsii.String("AWS::Lambda::Function"), jsii.Number(4))
 	template.ResourceCountIs(jsii.String("AWS::SQS::Queue"), jsii.Number(2))
-	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Alarm"), jsii.Number(10))
+	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Alarm"), jsii.Number(11))
 	// Logged-and-acknowledged failures alarm through metric filters.
 	template.ResourceCountIs(jsii.String("AWS::Logs::MetricFilter"), jsii.Number(2))
 	template.HasResourceProperties(jsii.String("AWS::Logs::MetricFilter"), map[string]any{
@@ -33,16 +34,39 @@ func TestStackHasTheDayZeroSurface(t *testing.T) {
 		"FilterPattern": `{ ($.msg = "batch_rollback_failed") || ($.msg = "idempotency_complete_failed") || ($.msg = "idempotency_release_failed") }`,
 	})
 
-	template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), map[string]any{
-		"BillingMode": "PAY_PER_REQUEST",
-		"KeySchema": []any{
-			map[string]any{"AttributeName": "pk", "KeyType": "HASH"},
-			map[string]any{"AttributeName": "sk", "KeyType": "RANGE"},
+	// ADR 0006: one table per port, each with its own natural key. Only the
+	// batch items stream, only the idempotency keys expire, and the audit
+	// tables keep point-in-time recovery.
+	hash := func(name string) map[string]any { return map[string]any{"AttributeName": name, "KeyType": "HASH"} }
+	for _, table := range []map[string]any{
+		{
+			"KeySchema":                        []any{hash("decision_id")},
+			"StreamSpecification":              assertions.Match_Absent(),
+			"TimeToLiveSpecification":          assertions.Match_Absent(),
+			"PointInTimeRecoverySpecification": map[string]any{"PointInTimeRecoveryEnabled": true},
 		},
-		"SSESpecification": map[string]any{
-			"SSEEnabled": true,
+		{
+			"KeySchema":           []any{hash("batch_id"), map[string]any{"AttributeName": "item_id", "KeyType": "RANGE"}},
+			"StreamSpecification": map[string]any{"StreamViewType": "NEW_IMAGE"},
+			// ADR 0007: a list by status reads only that status's items.
+			"GlobalSecondaryIndexes": []any{map[string]any{
+				"IndexName":  statusIndexName,
+				"KeySchema":  []any{hash("batch_status"), map[string]any{"AttributeName": "item_id", "KeyType": "RANGE"}},
+				"Projection": map[string]any{"ProjectionType": "ALL"},
+			}},
+			"TimeToLiveSpecification":          assertions.Match_Absent(),
+			"PointInTimeRecoverySpecification": map[string]any{"PointInTimeRecoveryEnabled": true},
 		},
-	})
+		{
+			"KeySchema":               []any{hash("idempotency_key")},
+			"StreamSpecification":     assertions.Match_Absent(),
+			"TimeToLiveSpecification": map[string]any{"AttributeName": "expires_at", "Enabled": true},
+		},
+	} {
+		table["BillingMode"] = "PAY_PER_REQUEST"
+		table["SSESpecification"] = map[string]any{"SSEEnabled": true}
+		template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), table)
+	}
 	routes := []string{
 		"POST /evaluations",
 		"GET /evaluations/{id}",
@@ -71,7 +95,7 @@ func TestStackHasTheDayZeroSurface(t *testing.T) {
 	})
 }
 
-// ADR 0004: the table's stream feeds the relay, and the relay is the only
+// ADR 0004: the batch items' stream feeds the relay, and the relay is the only
 // Lambda that may send to the queue.
 func TestRelayIsTheOutboxOfTheTableStream(t *testing.T) {
 	t.Cleanup(jsii.Close)
@@ -118,11 +142,6 @@ func TestStackProtectsDataAndWatchesTheBatchSLO(t *testing.T) {
 	app := awscdk.NewApp(nil)
 	template := assertions.Template_FromStack(NewStack(app, "Test", nil), nil)
 
-	template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), map[string]any{
-		"PointInTimeRecoverySpecification": map[string]any{"PointInTimeRecoveryEnabled": true},
-		"SSESpecification":                 map[string]any{"SSEEnabled": true},
-		"TimeToLiveSpecification":          map[string]any{"AttributeName": "expires_at", "Enabled": true},
-	})
 	for _, q := range *template.FindResources(jsii.String("AWS::SQS::Queue"), nil) {
 		if (*q)["Properties"].(map[string]any)["SqsManagedSseEnabled"] != true {
 			t.Fatalf("queue without SSE-SQS: %v", *q)
@@ -157,7 +176,7 @@ func TestStackHasTheDLQAndItsConsumer(t *testing.T) {
 	queue := stack.GetLogicalId(stack.Node().FindChild(jsii.String(queueID)).Node().DefaultChild().(awscdk.CfnElement))
 	consumer := stack.GetLogicalId(stack.Node().FindChild(jsii.String(dlqFunctionID)).Node().DefaultChild().(awscdk.CfnElement))
 	worker := stack.GetLogicalId(stack.Node().FindChild(jsii.String(workerFunctionID)).Node().DefaultChild().(awscdk.CfnElement))
-	table := stack.GetLogicalId(stack.Node().FindChild(jsii.String(tableID)).Node().DefaultChild().(awscdk.CfnElement))
+	items := stack.GetLogicalId(stack.Node().FindChild(jsii.String(itemsTableID)).Node().DefaultChild().(awscdk.CfnElement))
 
 	template.HasResourceProperties(jsii.String("AWS::SQS::Queue"), map[string]any{
 		"MessageRetentionPeriod": 14 * 24 * 60 * 60,
@@ -188,7 +207,7 @@ func TestStackHasTheDLQAndItsConsumer(t *testing.T) {
 		"MemorySize":    256,
 		"TracingConfig": map[string]any{"Mode": "Active"},
 		"Environment": map[string]any{"Variables": map[string]any{
-			"DECISIONS_TABLE": map[string]any{"Ref": assertions.Match_AnyValue()},
+			"BATCH_ITEMS_TABLE": map[string]any{"Ref": assertions.Match_AnyValue()},
 		}},
 		"LoggingConfig": map[string]any{"LogGroup": map[string]any{"Ref": assertions.Match_StringLikeRegexp(jsii.String("DlqConsumerLogs"))}},
 	})
@@ -197,8 +216,65 @@ func TestStackHasTheDLQAndItsConsumer(t *testing.T) {
 	})
 
 	// Least privilege: past the X-Ray grant that active tracing adds, the
-	// consumer's role touches only the table and the DLQ.
-	role := (*template.FindResources(jsii.String("AWS::Lambda::Function"), map[string]any{}))[*consumer]
+	// worker touches only the batch items and its queue, and the DLQ consumer
+	// only the batch items and the DLQ.
+	onlyResources(t, template, *worker, *items, *queue)
+	onlyResources(t, template, *consumer, *items, *dlq)
+
+	// And only the DynamoDB actions their code calls.
+	fnID := func(id string) string {
+		return *stack.GetLogicalId(stack.Node().FindChild(jsii.String(id)).Node().DefaultChild().(awscdk.CfnElement))
+	}
+	for fn, want := range map[string][]string{
+		fnID(functionID):       union(httpDecisionActions, httpItemActions, httpKeyActions),
+		fnID(workerFunctionID): workerItemActions,
+		fnID(dlqFunctionID):    dlqItemActions,
+		fnID(relayFunctionID):  {"dynamodb:DescribeStream", "dynamodb:GetRecords", "dynamodb:GetShardIterator", "dynamodb:ListStreams"},
+	} {
+		if got := dynamoActions(template, fn); !slices.Equal(got, union(want)) {
+			t.Fatalf("%s DynamoDB actions %v, want %v", fn, got, union(want))
+		}
+	}
+}
+
+// dynamoActions lists, sorted and once each, the dynamodb: actions of the
+// function's role.
+func dynamoActions(template assertions.Template, fn string) []string {
+	role := (*template.FindResources(jsii.String("AWS::Lambda::Function"), map[string]any{}))[fn]
+	roleRef := (*role)["Properties"].(map[string]any)["Role"].(map[string]any)["Fn::GetAtt"].([]any)[0].(string)
+	var got []string
+	for _, p := range *template.FindResources(jsii.String("AWS::IAM::Policy"), nil) {
+		props := (*p)["Properties"].(map[string]any)
+		mine := slices.ContainsFunc(props["Roles"].([]any), func(r any) bool { return r.(map[string]any)["Ref"] == roleRef })
+		if !mine {
+			continue
+		}
+		for _, st := range props["PolicyDocument"].(map[string]any)["Statement"].([]any) {
+			for _, a := range resources(st.(map[string]any)["Action"]) {
+				if s, _ := a.(string); strings.HasPrefix(s, "dynamodb:") {
+					got = append(got, s)
+				}
+			}
+		}
+	}
+	return union(got)
+}
+
+// union merges the lists, sorted and without repeats.
+func union(lists ...[]string) []string {
+	var out []string
+	for _, l := range lists {
+		out = append(out, l...)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
+// onlyResources fails unless every statement of the function's role, past
+// X-Ray, is on one of the allowed resources and none may send to a queue.
+func onlyResources(t *testing.T, template assertions.Template, fn string, allowed ...string) {
+	t.Helper()
+	role := (*template.FindResources(jsii.String("AWS::Lambda::Function"), map[string]any{}))[fn]
 	roleRef := (*role)["Properties"].(map[string]any)["Role"].(map[string]any)["Fn::GetAtt"].([]any)[0].(string)
 	var policies []map[string]any
 	for _, p := range *template.FindResources(jsii.String("AWS::IAM::Policy"), nil) {
@@ -209,7 +285,7 @@ func TestStackHasTheDLQAndItsConsumer(t *testing.T) {
 		}
 	}
 	if len(policies) != 1 {
-		t.Fatalf("consumer role has %d policies, want 1", len(policies))
+		t.Fatalf("%s role has %d policies, want 1", fn, len(policies))
 	}
 	for _, st := range policies[0]["Properties"].(map[string]any)["PolicyDocument"].(map[string]any)["Statement"].([]any) {
 		stmt := st.(map[string]any)
@@ -217,13 +293,13 @@ func TestStackHasTheDLQAndItsConsumer(t *testing.T) {
 			continue
 		}
 		for _, res := range resources(stmt["Resource"]) {
-			if !refersTo(res, *dlq) && !refersTo(res, *table) {
-				t.Fatalf("consumer statement on %v: %v", res, stmt)
+			if !slices.ContainsFunc(allowed, func(a string) bool { return refersTo(res, a) }) {
+				t.Fatalf("%s statement on %v: %v", fn, res, stmt)
 			}
 		}
 		for _, a := range resources(stmt["Action"]) {
 			if s, _ := a.(string); s == "sqs:SendMessage" || s == "*" {
-				t.Fatalf("consumer may %s", s)
+				t.Fatalf("%s may %s", fn, s)
 			}
 		}
 	}

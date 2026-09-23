@@ -79,7 +79,7 @@ func TestEvaluateValidation(t *testing.T) {
 			if got.Error != tc.wantError || !slices.Equal(got.Violations, tc.want) {
 				t.Fatalf("body=%s", resp.Body)
 			}
-			if n := flocitest.Rows(t, h.cfg, h.table); n != 0 {
+			if n := flocitest.Rows(t, h.cfg, h.tables.All()...); n != 0 {
 				t.Fatalf("stored %d rows for an invalid request", n)
 			}
 		})
@@ -114,7 +114,7 @@ func TestBatchWithInvalidCustomerPublishesNothing(t *testing.T) {
 			t.Fatalf("violation %d = %+v want %+v", i, v, want[i])
 		}
 	}
-	if n := flocitest.Rows(t, h.cfg, h.table); n != 0 || len(h.attempts()) != 0 {
+	if n := flocitest.Rows(t, h.cfg, h.tables.All()...); n != 0 || len(h.attempts()) != 0 {
 		t.Fatalf("stored %d rows or published an invalid batch", n)
 	}
 }
@@ -127,7 +127,7 @@ func TestBatchStoresNormalizedCPF(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp.Body), &acc); err != nil {
 		t.Fatal(err)
 	}
-	it, err := ddb.New(h.cfg, h.table).Item(t.Context(), acc.BatchID, acc.ItemIDs[0])
+	it, err := ddb.NewItems(h.cfg, h.tables.Items).Item(t.Context(), acc.BatchID, acc.ItemIDs[0])
 	if err != nil || it.Customer.CPF != "39053344705" {
 		t.Fatalf("item=%+v err=%v", it, err)
 	}

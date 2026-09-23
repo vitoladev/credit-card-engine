@@ -28,9 +28,11 @@ func main() {
 }
 
 func compose(ctx context.Context) (httpapi.Handler, error) {
-	table := os.Getenv("DECISIONS_TABLE")
-	if table == "" {
-		return httpapi.Handler{}, errors.New("DECISIONS_TABLE required")
+	decisions := os.Getenv("DECISIONS_TABLE")
+	items := os.Getenv("BATCH_ITEMS_TABLE")
+	keys := os.Getenv("IDEMPOTENCY_KEYS_TABLE")
+	if decisions == "" || items == "" || keys == "" {
+		return httpapi.Handler{}, errors.New("DECISIONS_TABLE, BATCH_ITEMS_TABLE, and IDEMPOTENCY_KEYS_TABLE required")
 	}
 	batchSize, err := batch.ParseBatchSize(os.Getenv("BATCH_SIZE"))
 	if err != nil {
@@ -40,13 +42,16 @@ func compose(ctx context.Context) (httpapi.Handler, error) {
 	if err != nil {
 		return httpapi.Handler{}, err
 	}
-	st := ddb.New(cfg, table)
 	policy := rules.NewPolicy()
 	b := batch.New(batch.Deps{
-		Items:        st,
+		Items:        ddb.NewItems(cfg, items),
 		Policy:       policy,
 		Emitter:      telemetry.EMF{},
 		MaxCustomers: batchSize,
 	})
-	return httpapi.New(evaluate.New(policy, st, telemetry.EMF{}), b, idempotency.New(ddb.NewKeys(st))), nil
+	return httpapi.New(
+		evaluate.New(policy, ddb.NewDecisions(cfg, decisions), telemetry.EMF{}),
+		b,
+		idempotency.New(ddb.NewKeys(cfg, keys)),
+	), nil
 }

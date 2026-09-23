@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" role="img" aria-labelledby="t d">
+  <title id="t">A batch has no status</title>
+  <desc id="d">Three BatchItems rows named Ana, Bruno, and Carla sit in a partition labeled batch_id. The partition has no status field.</desc>
+  <rect width="1200" height="640" fill="#f3ead8"/>
+  <rect x="70" y="70" width="1060" height="430" rx="28" fill="#d8c4a0" stroke="#1b1612" stroke-width="8"/>
+  <text x="110" y="130" fill="#6f6458" font-size="32" font-family="ui-sans-serif, sans-serif">BatchItems · batch_id</text>
+  <g transform="translate(130 180)">
+    <rect width="250" height="270" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <line x1="24" y1="70" x2="226" y2="70" stroke="#1b1612" stroke-width="3" stroke-dasharray="8 8"/>
+    <text x="32" y="52" font-size="36" font-family="Georgia, serif" fill="#1b1612">Ana</text>
+    <text x="32" y="120" font-size="22" font-family="ui-sans-serif, sans-serif" fill="#6f6458">item_id</text>
+  </g>
+  <g transform="translate(470 200)">
+    <rect width="250" height="270" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <line x1="24" y1="70" x2="226" y2="70" stroke="#1b1612" stroke-width="3" stroke-dasharray="8 8"/>
+    <text x="32" y="52" font-size="36" font-family="Georgia, serif" fill="#1b1612">Bruno</text>
+    <text x="32" y="120" font-size="22" font-family="ui-sans-serif, sans-serif" fill="#6f6458">item_id</text>
+  </g>
+  <g transform="translate(810 170)">
+    <rect width="250" height="270" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <line x1="24" y1="70" x2="226" y2="70" stroke="#1b1612" stroke-width="3" stroke-dasharray="8 8"/>
+    <text x="32" y="52" font-size="36" font-family="Georgia, serif" fill="#1b1612">Carla</text>
+    <text x="32" y="120" font-size="22" font-family="ui-sans-serif, sans-serif" fill="#6f6458">item_id</text>
+  </g>
+  <text x="600" y="580" text-anchor="middle" font-size="36" font-family="Georgia, serif" fill="#1b1612">There is no batch row and no batch status.</text>
+</svg>

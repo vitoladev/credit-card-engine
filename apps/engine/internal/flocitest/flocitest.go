@@ -175,50 +175,107 @@ func (f *Faults) dropEntries(stack *middleware.Stack) error {
 		}), middleware.After)
 }
 
-// Table creates the engine's single table (pk, sk) with its stream (NEW_IMAGE)
-// on, as the stack declares it, and deletes it when the test ends.
-func Table(t *testing.T, cfg aws.Config) string {
+// statusIndex is ddb.StatusIndex. The helper does not import the adapter, so
+// the name is repeated; the ddb tests fail if the two differ.
+const statusIndex = "by-status"
+
+// Tables names one test's copies of the engine's tables.
+type Tables struct {
+	Decisions string
+	Items     string
+	Keys      string
+}
+
+// All lists the three table names.
+func (tb Tables) All() []string {
+	return []string{tb.Decisions, tb.Items, tb.Keys}
+}
+
+// CreateTables creates the engine's three tables as the stack declares them
+// (ADR 0006): Decisions (decision_id), BatchItems (batch_id, item_id) with its
+// stream (NEW_IMAGE), and IdempotencyKeys (idempotency_key). It deletes them
+// when the test ends.
+func CreateTables(t *testing.T, cfg aws.Config) Tables {
+	t.Helper()
+	id := uuid.New().String()
+	tb := Tables{
+		Decisions: "engine-test-decisions-" + id,
+		Items:     "engine-test-items-" + id,
+		Keys:      "engine-test-keys-" + id,
+	}
+	createTable(t, cfg, tb.Decisions, []string{"decision_id"})
+	createTable(t, cfg, tb.Items, []string{"batch_id", "item_id"}, withStream, withStatusIndex)
+	createTable(t, cfg, tb.Keys, []string{"idempotency_key"})
+	return tb
+}
+
+func withStream(in *dynamodb.CreateTableInput) {
+	in.StreamSpecification = &ddbtypes.StreamSpecification{
+		StreamEnabled:  new(true),
+		StreamViewType: ddbtypes.StreamViewTypeNewImage,
+	}
+}
+
+// withStatusIndex adds the BatchItems index that lists items by status
+// (ADR 0007): batch_status, then item_id, with every attribute projected.
+func withStatusIndex(in *dynamodb.CreateTableInput) {
+	in.AttributeDefinitions = append(in.AttributeDefinitions,
+		ddbtypes.AttributeDefinition{AttributeName: new("batch_status"), AttributeType: ddbtypes.ScalarAttributeTypeS})
+	in.GlobalSecondaryIndexes = []ddbtypes.GlobalSecondaryIndex{{
+		IndexName: new(statusIndex),
+		KeySchema: []ddbtypes.KeySchemaElement{
+			{AttributeName: new("batch_status"), KeyType: ddbtypes.KeyTypeHash},
+			{AttributeName: new("item_id"), KeyType: ddbtypes.KeyTypeRange},
+		},
+		Projection: &ddbtypes.Projection{ProjectionType: ddbtypes.ProjectionTypeAll},
+	}}
+}
+
+// createTable creates a table keyed by keys (the hash key, then the range key
+// if any), then applies each option.
+func createTable(t *testing.T, cfg aws.Config, name string, keys []string, opts ...func(*dynamodb.CreateTableInput)) {
 	t.Helper()
 	client := dynamodb.NewFromConfig(cfg)
-	name := "engine-test-" + uuid.New().String()
-	_, err := client.CreateTable(t.Context(), &dynamodb.CreateTableInput{
+	in := &dynamodb.CreateTableInput{
 		TableName:   new(name),
 		BillingMode: ddbtypes.BillingModePayPerRequest,
-		AttributeDefinitions: []ddbtypes.AttributeDefinition{
-			{AttributeName: new("pk"), AttributeType: ddbtypes.ScalarAttributeTypeS},
-			{AttributeName: new("sk"), AttributeType: ddbtypes.ScalarAttributeTypeS},
-		},
-		KeySchema: []ddbtypes.KeySchemaElement{
-			{AttributeName: new("pk"), KeyType: ddbtypes.KeyTypeHash},
-			{AttributeName: new("sk"), KeyType: ddbtypes.KeyTypeRange},
-		},
-		StreamSpecification: &ddbtypes.StreamSpecification{
-			StreamEnabled:  new(true),
-			StreamViewType: ddbtypes.StreamViewTypeNewImage,
-		},
-	})
-	if err != nil {
+	}
+	for i, k := range keys {
+		kind := ddbtypes.KeyTypeHash
+		if i == 1 {
+			kind = ddbtypes.KeyTypeRange
+		}
+		in.AttributeDefinitions = append(in.AttributeDefinitions,
+			ddbtypes.AttributeDefinition{AttributeName: new(k), AttributeType: ddbtypes.ScalarAttributeTypeS})
+		in.KeySchema = append(in.KeySchema, ddbtypes.KeySchemaElement{AttributeName: new(k), KeyType: kind})
+	}
+	for _, opt := range opts {
+		opt(in)
+	}
+	if _, err := client.CreateTable(t.Context(), in); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_, _ = client.DeleteTable(context.Background(), &dynamodb.DeleteTableInput{TableName: new(name)})
 	})
-	return name
 }
 
-// Rows counts every row in the table.
-func Rows(t *testing.T, cfg aws.Config, table string) int {
+// Rows counts every item in the tables.
+func Rows(t *testing.T, cfg aws.Config, tables ...string) int {
 	t.Helper()
-	p := dynamodb.NewScanPaginator(dynamodb.NewFromConfig(cfg), &dynamodb.ScanInput{
-		TableName: new(table), ConsistentRead: new(true),
-	})
+	client := dynamodb.NewFromConfig(cfg)
 	n := 0
-	for p.HasMorePages() {
-		page, err := p.NextPage(t.Context())
-		if err != nil {
-			t.Fatal(err)
+	for _, table := range tables {
+		p := dynamodb.NewScanPaginator(client, &dynamodb.ScanInput{
+			TableName: new(table), ConsistentRead: new(true),
+		})
+		for p.HasMorePages() {
+			page, err := p.NextPage(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			n += len(page.Items)
 		}
-		n += len(page.Items)
 	}
 	return n
 }
@@ -299,6 +356,8 @@ type Stream struct {
 	iterators map[string]*string
 }
 
+// TableStream reads the stream of a table, the BatchItems table in the
+// engine, as the relay's event source mapping would.
 func TableStream(t *testing.T, cfg aws.Config, table string) *Stream {
 	t.Helper()
 	out, err := dynamodb.NewFromConfig(cfg).DescribeTable(t.Context(), &dynamodb.DescribeTableInput{TableName: new(table)})

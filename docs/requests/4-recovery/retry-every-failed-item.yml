@@ -1,0 +1,14 @@
+info:
+  name: Retry every failed item
+  type: http
+  seq: 3
+http:
+  method: POST
+  url: '{{baseUrl}}/batches/{{batchId}}/retry-failed'
+  auth: inherit
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '202'
+docs: 'Returns {requeued: n}: the FAILED items under 5 attempts.'

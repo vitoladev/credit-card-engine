@@ -1,0 +1,13 @@
+name: aws
+description: A stack deployed to AWS. baseUrl is the stack's ApiUrl output.
+variables:
+- name: baseUrl
+  value: https://REPLACE_WITH_API_ID.execute-api.us-east-1.amazonaws.com
+- secret: true
+  name: awsAccessKeyId
+- secret: true
+  name: awsSecretAccessKey
+- secret: true
+  name: awsSessionToken
+- name: awsRegion
+  value: us-east-1

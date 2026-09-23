@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" role="img" aria-labelledby="t d">
+  <title id="t">Status lives on the item</title>
+  <desc id="d">Four BatchItems rows stamped QUEUED, QUEUED, APPROVED, and FAILED. A legend lists QUEUED, APPROVED, DENIED, FAILED, and CANCELLED.</desc>
+  <rect width="1200" height="640" fill="#f3ead8"/>
+  <g transform="translate(50 60)">
+    <rect width="250" height="310" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <text x="28" y="48" font-size="32" font-family="Georgia, serif" fill="#1b1612">Ana</text>
+    <rect x="28" y="120" width="194" height="70" rx="10" fill="#e2b84a" transform="rotate(-6 125 155)"/>
+    <text x="125" y="164" text-anchor="middle" font-size="24" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#1b1612">QUEUED</text>
+  </g>
+  <g transform="translate(330 60)">
+    <rect width="250" height="310" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <text x="28" y="48" font-size="32" font-family="Georgia, serif" fill="#1b1612">Bruno</text>
+    <rect x="28" y="120" width="194" height="70" rx="10" fill="#e2b84a" transform="rotate(-4 125 155)"/>
+    <text x="125" y="164" text-anchor="middle" font-size="24" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#1b1612">QUEUED</text>
+  </g>
+  <g transform="translate(610 60)">
+    <rect width="250" height="310" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <text x="28" y="48" font-size="32" font-family="Georgia, serif" fill="#1b1612">Carla</text>
+    <rect x="22" y="128" width="206" height="70" rx="10" fill="#2d6a4f" transform="rotate(5 125 163)"/>
+    <text x="125" y="172" text-anchor="middle" font-size="22" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#fff8ee">APPROVED</text>
+  </g>
+  <g transform="translate(890 60)">
+    <rect width="250" height="310" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <text x="28" y="48" font-size="32" font-family="Georgia, serif" fill="#1b1612">Diego</text>
+    <rect x="34" y="128" width="182" height="70" rx="10" fill="#6d4c41" transform="rotate(-5 125 163)"/>
+    <text x="125" y="172" text-anchor="middle" font-size="24" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#fff8ee">FAILED</text>
+  </g>
+  <g font-family="ui-sans-serif, sans-serif" font-size="22" fill="#1b1612">
+    <rect x="50" y="410" width="18" height="18" fill="#e2b84a" stroke="#1b1612" stroke-width="2"/>
+    <text x="78" y="426">QUEUED</text>
+    <rect x="220" y="410" width="18" height="18" fill="#2d6a4f" stroke="#1b1612" stroke-width="2"/>
+    <text x="248" y="426">APPROVED</text>
+    <rect x="430" y="410" width="18" height="18" fill="#9b2226" stroke="#1b1612" stroke-width="2"/>
+    <text x="458" y="426">DENIED</text>
+    <rect x="610" y="410" width="18" height="18" fill="#6d4c41" stroke="#1b1612" stroke-width="2"/>
+    <text x="638" y="426">FAILED</text>
+    <rect x="790" y="410" width="18" height="18" fill="#3d4f66" stroke="#1b1612" stroke-width="2"/>
+    <text x="818" y="426">CANCELLED</text>
+  </g>
+  <text x="600" y="530" text-anchor="middle" font-size="36" font-family="Georgia, serif" fill="#1b1612">Status lives on the item.</text>
+</svg>

@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" role="img" aria-labelledby="t d">
+  <title id="t">FAILED is an item. The batch still has no status.</title>
+  <desc id="d">A batch_id partition holds items stamped APPROVED, FAILED, and DENIED. An operator stands next to the FAILED item. The partition has no status.</desc>
+  <rect width="1200" height="640" fill="#f3ead8"/>
+  <rect x="50" y="60" width="860" height="420" rx="28" fill="#d8c4a0" stroke="#1b1612" stroke-width="8"/>
+  <text x="90" y="118" fill="#6f6458" font-size="26" font-family="ui-sans-serif, sans-serif">BatchItems · batch_id</text>
+  <g transform="translate(90 160)">
+    <rect width="230" height="260" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <text x="20" y="46" font-size="32" font-family="Georgia, serif" fill="#1b1612">Ana</text>
+    <rect x="18" y="110" width="194" height="64" rx="10" fill="#2d6a4f" transform="rotate(4 115 142)"/>
+    <text x="115" y="152" text-anchor="middle" font-size="20" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#fff8ee">APPROVED</text>
+  </g>
+  <g transform="translate(360 180)">
+    <rect width="230" height="260" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <text x="20" y="46" font-size="32" font-family="Georgia, serif" fill="#1b1612">Bruno</text>
+    <rect x="28" y="110" width="174" height="64" rx="10" fill="#6d4c41" transform="rotate(-5 115 142)"/>
+    <text x="115" y="152" text-anchor="middle" font-size="22" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#fff8ee">FAILED</text>
+  </g>
+  <g transform="translate(630 150)">
+    <rect width="230" height="260" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <text x="20" y="46" font-size="32" font-family="Georgia, serif" fill="#1b1612">Carla</text>
+    <rect x="30" y="110" width="170" height="64" rx="10" fill="#9b2226" transform="rotate(5 115 142)"/>
+    <text x="115" y="152" text-anchor="middle" font-size="22" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#fff8ee">DENIED</text>
+  </g>
+  <g transform="translate(960 140)">
+    <circle cx="80" cy="50" r="42" fill="#c4a574" stroke="#1b1612" stroke-width="5"/>
+    <rect x="44" y="98" width="72" height="150" rx="22" fill="#2d6a4f" stroke="#1b1612" stroke-width="5"/>
+    <text x="80" y="300" text-anchor="middle" font-size="24" font-family="ui-sans-serif, sans-serif" fill="#1b1612">operator</text>
+    <text x="80" y="332" text-anchor="middle" font-size="20" font-family="ui-sans-serif, sans-serif" fill="#6f6458">retry / cancel</text>
+  </g>
+  <text x="600" y="560" text-anchor="middle" font-size="32" font-family="Georgia, serif" fill="#1b1612">FAILED is an item. The batch still has no status.</text>
+</svg>

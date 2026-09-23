@@ -1,0 +1,41 @@
+info:
+  name: 'Replay: same key, same body'
+  type: http
+  seq: 2
+http:
+  method: POST
+  url: '{{baseUrl}}/evaluations'
+  auth: inherit
+  headers:
+  - name: Idempotency-Key
+    value: '{{idempotencyKey}}'
+  body:
+    type: json
+    data: |-
+      {
+        "name": "Eva",
+        "cpf": "222.333.444-05",
+        "credit_score": 820,
+        "current_invoice_cents": 100000,
+        "credit_limit_cents": 1000000,
+        "late_payments": 0,
+        "monthly_spend_cents": [
+          100000,
+          110000,
+          90000
+        ]
+      }
+runtime:
+  assertions:
+  - expression: res.status
+    operator: eq
+    value: '200'
+  scripts:
+  - type: tests
+    code: |-
+      test("Replay: same key, same body", function () {
+        expect(res.body.decision_id).to.equal(bru.getVar("keyedDecisionId"));
+        expect(res.getHeader("idempotent-replayed")).to.equal("true");
+      });
+docs: 'Returns the first response again, with the header idempotent-replayed: true. Nothing is evaluated
+  or stored twice.'

@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 
 	"github.com/aws/aws-lambda-go/events"
 
 	"engine/internal/batch"
 )
 
-// Relay consumes the table's stream (NEW_IMAGE) and hands each batch item
+// Relay consumes the BatchItems stream (NEW_IMAGE) and hands each batch item
 // change to batch.Relay as an item event (ADR 0004). The stream record format
 // is the table's row format, so it is read here, next to the rows.
 type Relay struct {
@@ -59,20 +58,16 @@ func (r Relay) Handle(ctx context.Context, ev events.DynamoDBEvent) (events.Dyna
 	return resp, nil
 }
 
-// ItemEventFrom reads the item event of one stream record. ok is false for a
-// record that is no item change: a removal, or a row other than a batch item.
+// ItemEventFrom reads the item event of one BatchItems stream record. ok is
+// false for a removal, which is no item change.
 func ItemEventFrom(rec events.DynamoDBEventRecord) (batch.ItemEvent, bool, error) {
 	if rec.EventName == string(events.DynamoDBOperationTypeRemove) {
 		return batch.ItemEvent{}, false, nil
 	}
 	img := rec.Change.NewImage
-	pk, err := streamS(img, "pk")
+	batchID, err := streamS(img, "batch_id")
 	if err != nil {
 		return batch.ItemEvent{}, false, err
-	}
-	batchID, ok := strings.CutPrefix(pk, "BATCH#")
-	if !ok {
-		return batch.ItemEvent{}, false, nil
 	}
 	itemID, err := streamS(img, "item_id")
 	if err != nil {

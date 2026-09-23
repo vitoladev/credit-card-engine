@@ -25,16 +25,16 @@ func main() {
 }
 
 func compose(ctx context.Context) (sqs.Consumer, error) {
-	table := os.Getenv("DECISIONS_TABLE")
-	if table == "" {
-		return sqs.Consumer{}, errors.New("DECISIONS_TABLE required")
+	items := os.Getenv("BATCH_ITEMS_TABLE")
+	if items == "" {
+		return sqs.Consumer{}, errors.New("BATCH_ITEMS_TABLE required")
 	}
 	cfg, err := awsconfig.Load(ctx)
 	if err != nil {
 		return sqs.Consumer{}, err
 	}
 	return sqs.DeadLetters(batch.New(batch.Deps{
-		Items:   ddb.New(cfg, table),
+		Items:   ddb.NewItems(cfg, items),
 		Emitter: telemetry.EMF{},
 	})), nil
 }

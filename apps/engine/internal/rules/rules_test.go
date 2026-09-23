@@ -75,7 +75,7 @@ func TestPolicyEvaluate(t *testing.T) {
 			if got.Decision == domain.Denied && got.RevolvingAmountCents != 0 {
 				t.Fatalf("denied with amount %d", got.RevolvingAmountCents)
 			}
-			if got.Name != "Ana" || got.CPFMasked != "***05" {
+			if got.Name != "Ana" || got.CPFMasked != "390.***.***-05" {
 				t.Fatalf("result=%+v", got)
 			}
 		})
