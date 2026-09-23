@@ -478,7 +478,7 @@ in that list.
 |---|---|
 | Latency ≤ 1 s | The sync path evaluates in memory and makes one DynamoDB write, or three with an `Idempotency-Key` (claim, decision, complete). Lambda timeout 3 s, 256 MB, arm64. HTTP p99 is alarmed at 800 ms. The batch path answers after its `BatchWriteItem` calls. Each item's time from queued to decided is `ItemEndToEndMs`, alarmed at p99 > 5 s. See [loadtest.md](loadtest.md). |
 | Accuracy | Customers validated at the edge (CPF check digits, no negatives). Deterministic rules. Table tests in `domain` and `rules`. Stable reason code per rule. |
-| Scale 10k/min | HTTP writes the items (202), the relay publishes from the stream, and the worker takes up to 50 messages per invocation (1 s window) and handles them concurrently. DynamoDB is on-demand. Stage throttle is 1200 rps / 2400 burst. On AWS, Lambda scales an SQS source to 5 concurrent batches and then adds up to 300 invocations a minute, up to 1,250. Floci cannot show this, and there is no AWS account in this cut: [loadtest.md](loadtest.md) has the local runs and the commands for AWS. |
+| Scale 10k/min | HTTP writes the items (202), the relay publishes from the stream, and the worker takes up to 50 messages per invocation (1 s window) and handles them concurrently. DynamoDB is on-demand. Stage throttle is 1200 rps / 2400 burst. On AWS, Lambda scales an SQS source to 5 concurrent batches and then adds up to 300 invocations a minute, up to 1,250. Floci cannot show this, and there is no AWS account in this cut: [loadtest.md](loadtest.md) has the local runs. |
 | Extensibility | Ordered `rules.Rule` list and score bands, assembled in `rules.NewPolicy()`. `architecture_test.go` keeps domain, rules, and the modules off AWS. |
 | LGPD | CPF masked on `Result` and in logs. Encryption at rest on the tables and both queues (SSE-SQS), and the queues deny requests not over TLS. IAM authorizer on every HTTP route except `/health`. Full CPF and name stay in DynamoDB. Queue messages and the relay carry no customer data. The HTTP Lambda has no access to the queue. |
 | Observability | 14-day logs. One EMF line per decision (`Approved` or `Denied`, `DenyByReason`, `DecisionLatencyMs`) and per failed item (`ItemsFailed`). Dashboard `CreditCardEngine`. Eleven alarms, listed in [Observability](#observability). |
@@ -488,8 +488,8 @@ in that list.
 
 [loadtest.md](loadtest.md) has every load test run, the time of one request
 layer by layer, and the limits of Floci behind the numbers. In short, Floci
-serves about 10 Lambda invocations a second, so the 1000 req/s runs need a
-real AWS stack.
+serves about 10 Lambda invocations a second, so a local run measures the
+emulator, not the engine.
 
 ## API
 
@@ -559,7 +559,7 @@ The last page has no `next_cursor`.
 | Queue encryption | SSE-SQS on both queues, and a policy that denies requests not over TLS | Encryption at rest and in transit with no key to manage. |
 | Point-in-time recovery | on `Decisions` and `BatchItems`, 35 days | Restores the table to any second after a bad write or an operator error. |
 | `DlqConsumer` Lambda | `cmd/dlq`, same runtime and sizing as the others, 14-day log group | Batch size 10 with `ReportBatchItemFailures`. Read and write on `BatchItems` and consume on the DLQ, nothing else. |
-| Routes | `POST /evaluations`, `GET /evaluations/{id}`, `POST /evaluations/batch`, `GET /batches/{id}/items`, `POST /batches/{id}/items/{item_id}/retry`, `POST /batches/{id}/items/{item_id}/cancel`, `POST /batches/{id}/retry-failed`, `GET /health` | One HTTP Lambda serves every route. The HTTP Lambda reads and writes the three tables. The worker and the DLQ consumer reach only `BatchItems`. Only the relay sends to the queue. |
+| Routes | `POST /evaluations`, `GET /evaluations/{id}`, `POST /evaluations/batch`, `GET /batches/{id}/items`, `POST /batches/{id}/items/{item_id}/retry`, `POST /batches/{id}/items/{item_id}/cancel`, `POST /batches/{id}/retry-failed`, `GET /health` | One HTTP Lambda serves every route. Each Lambda gets only the DynamoDB actions its code calls, with explicit grants and no `Scan`: the HTTP Lambda on the three tables, the worker `GetItem` and `UpdateItem` on `BatchItems`, the DLQ consumer `UpdateItem` on `BatchItems`, and the relay only the `BatchItems` stream. The stack test pins each list. Only the relay sends to the queue. |
 
 The run steps live in [README.md](../README.md).
 

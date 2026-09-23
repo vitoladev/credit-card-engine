@@ -203,7 +203,7 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 `make loadtest` runs k6 at `LOADTEST_RATE` req/s (default 100) for
 `LOADTEST_DURATION` (default 10 s), then removes the Floci Lambda containers,
 whether the run passed or failed. [docs/loadtest.md](docs/loadtest.md) has
-every setting, the results, and the commands for a real AWS stack.
+every setting, the results on Floci, and what limits them.
 
 ## What a local run does not prove
 
@@ -216,6 +216,10 @@ Floci differs from AWS in ways that change what a local run shows:
   all four in the template. Expired idempotency keys stay in their table on
   Floci, but the claim's condition treats them as absent, so keys still
   expire after 24 hours.
+- A `Query` whose `ExclusiveStartKey` names an item that no longer exists
+  restarts from the first item on Floci. DynamoDB continues after the key.
+  So a `?status=` cursor whose item changed status between two pages can
+  repeat items locally.
 - A failed update can leave an API, functions, event source mappings, and a
   tables behind. `make api-url` asks the stack for its own API, so it never
   picks a leftover one.
