@@ -458,6 +458,33 @@ func TestCreateRollsBackAfterTheRequestDeadline(t *testing.T) {
 	}
 }
 
+// A Lambda is killed at its deadline, so Create stops writing a second before
+// it and still has time to delete what it wrote. Before, a batch written by a
+// timed-out invocation stayed behind and was evaluated.
+func TestCreateStopsWritingInTimeToRollBack(t *testing.T) {
+	st := newStore(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
+	defer cancel()
+	customers := make([]domain.Customer, 30)
+	for i := range customers {
+		customers[i] = domain.Customer{Name: "Ana", CPF: "39053344705"}
+	}
+	// One chunk's write waits past the write deadline (500 ms before
+	// the request's), as a slow store would.
+	st.faults.OnCall("BatchWriteItem", func() { time.Sleep(700 * time.Millisecond) })
+	start := time.Now()
+	err := st.Create(ctx, "b1", newItems(customers))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatalf("Create returned after the request's deadline (%v)", time.Since(start))
+	}
+	if n := flocitest.Rows(t, st.cfg, st.tables.All()...); n != 0 {
+		t.Fatalf("rows=%d", n)
+	}
+}
+
 func TestCreateRemovesPartialRowsOnWriteFailure(t *testing.T) {
 	st := newStore(t)
 	st.faults.FailCalls("BatchWriteItem", 1)
@@ -550,6 +577,73 @@ func TestTheStatusIndexFollowsEveryTransition(t *testing.T) {
 		p, err := st.Page(ctx, "b1", batch.PageQuery{Status: status, Limit: 10})
 		if err != nil || !slices.Equal(ids(p.Items), want) || p.More {
 			t.Fatalf("%s: page=%v more=%v err=%v, want %v", status, ids(p.Items), p.More, err, want)
+		}
+	}
+}
+
+// ADR 0006: each port writes only its own table.
+func TestEachPortWritesOnlyItsOwnTable(t *testing.T) {
+	st := newStore(t)
+	ctx := t.Context()
+	k := ddb.NewKeys(st.Store)
+	counts := func() [3]int {
+		return [3]int{
+			flocitest.Rows(t, st.cfg, st.tables.Decisions),
+			flocitest.Rows(t, st.cfg, st.tables.Items),
+			flocitest.Rows(t, st.cfg, st.tables.Keys),
+		}
+	}
+
+	if err := st.Save(ctx, "d1", domain.Customer{Name: "Ana", CPF: "39053344705"}, domain.Result{Decision: domain.Approved}); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(); got != [3]int{1, 0, 0} {
+		t.Fatalf("after a decision: %v", got)
+	}
+	create(t, st, "b1", []domain.Customer{{Name: "Ana", CPF: "39053344705"}, {Name: "Bruno", CPF: "12345678909"}})
+	if got := counts(); got != [3]int{1, 2, 0} {
+		t.Fatalf("after a batch: %v", got)
+	}
+	if _, _, err := k.Claim(ctx, "key", claimAt("fp", time.Now())); err != nil {
+		t.Fatal(err)
+	}
+	if got := counts(); got != [3]int{1, 2, 1} {
+		t.Fatalf("after a key: %v", got)
+	}
+}
+
+// The worker and the DLQ consumer get only the BatchItems table name, as the
+// stack gives them only BatchItems (ADR 0006). Every batch.Items method works
+// with it.
+func TestItemsNeedOnlyTheBatchItemsTable(t *testing.T) {
+	cfg, _ := flocitest.Config(t)
+	tables := flocitest.CreateTables(t, cfg)
+	st := ddb.New(cfg, ddb.Tables{Items: tables.Items})
+	ctx := t.Context()
+	items := newItems([]domain.Customer{{Name: "Ana", CPF: "39053344705"}, {Name: "Bruno", CPF: "12345678909"}})
+	if err := st.Create(ctx, "b1", items); err != nil {
+		t.Fatal(err)
+	}
+	approve := domain.Result{Decision: domain.Approved, Reasons: []string{"eligible"}}
+	steps := []error{
+		st.Decide(ctx, "b1", items[0].ID, 1, approve),
+		st.Fail(ctx, "b1", items[1].ID, 1),
+		st.Retry(ctx, "b1", items[1].ID, 1),
+		st.Fail(ctx, "b1", items[1].ID, 2),
+		st.Cancel(ctx, "b1", items[1].ID),
+	}
+	if err := errors.Join(steps...); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Item(ctx, "b1", items[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.RetryMany(ctx, "b1", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []batch.PageQuery{{Limit: 10}, {Status: batch.Cancelled, Limit: 10}} {
+		if p, err := st.Page(ctx, "b1", q); err != nil || len(p.Items) == 0 {
+			t.Fatalf("%+v: page=%+v err=%v", q, p, err)
 		}
 	}
 }

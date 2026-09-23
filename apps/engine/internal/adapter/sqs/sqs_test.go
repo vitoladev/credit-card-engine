@@ -32,7 +32,7 @@ func (discard) ItemFailed(string, string, int)                                  
 func newBatch(t *testing.T) (batch.Module, *flocitest.Faults, [2]string) {
 	t.Helper()
 	cfg, faults := flocitest.Config(t)
-	st := ddb.New(cfg, ddb.Tables(flocitest.CreateTables(t, cfg)))
+	st := ddb.New(cfg, ddb.Tables{Items: flocitest.CreateTables(t, cfg).Items})
 	ids := [2]string{uuid.NewV7().String(), uuid.NewV7().String()}
 	if err := st.Create(t.Context(), "b1", []batch.Item{{ID: ids[0], Customer: ana}, {ID: ids[1], Customer: ana}}); err != nil {
 		t.Fatal(err)

@@ -42,9 +42,10 @@ const (
 	writeTries    = 6
 	backoffBase   = 25 * time.Millisecond
 	retryInFlight = 8
-	// rollbackTimeout bounds the delete of a batch whose Create failed. It
-	// runs past the request's deadline, inside the Lambda's own timeout.
-	rollbackTimeout = 2 * time.Second
+	// rollbackTimeout is the time Create keeps for deleting a batch whose
+	// write failed. The writes stop that long before the request's deadline,
+	// so the delete still runs before the Lambda's timeout kills the process.
+	rollbackTimeout = time.Second
 )
 
 // StatusIndex is the BatchItems index that lists a batch's items by status.
@@ -140,6 +141,8 @@ func (st *Store) Create(ctx context.Context, batchID string, items []batch.Item)
 		puts = append(puts, types.WriteRequest{PutRequest: &types.PutRequest{Item: item}})
 	}
 
+	writeCtx, cancelWrites := writeDeadline(ctx)
+	defer cancelWrites()
 	var (
 		mu   sync.Mutex
 		errs []error
@@ -151,7 +154,7 @@ func (st *Store) Create(ctx context.Context, batchID string, items []batch.Item)
 		sem <- struct{}{}
 		wg.Go(func() {
 			defer func() { <-sem }()
-			if err := st.batchWrite(ctx, chunk); err != nil {
+			if err := st.batchWrite(writeCtx, chunk); err != nil {
 				mu.Lock()
 				errs = append(errs, err)
 				mu.Unlock()
@@ -172,6 +175,18 @@ func (st *Store) Create(ctx context.Context, batchID string, items []batch.Item)
 		return err
 	}
 	return nil
+}
+
+// writeDeadline ends the writes rollbackTimeout before ctx's deadline. A
+// Lambda's context carries the invocation's deadline, and the process is
+// killed there: rows written after the last moment to delete them would be
+// left behind and evaluated for a batch the client got an error for.
+func writeDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	dl, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithDeadline(ctx, dl.Add(-rollbackTimeout))
 }
 
 // batchWrite sends up to writeChunk requests and retries UnprocessedItems with
