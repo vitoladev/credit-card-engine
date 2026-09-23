@@ -69,6 +69,25 @@ curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$
 # {"error":"invalid_customer","violations":[{"field":"cpf","code":"invalid_check_digits"},{"field":"credit_score","code":"negative"}]}
 ```
 
+### Retry safely with an Idempotency-Key
+
+Send the same `Idempotency-Key` on a retry of either `POST /evaluations`
+route. The first `2xx` response comes back again, marked
+`idempotent-replayed: true`, and nothing is evaluated or stored twice:
+
+```bash
+KEY="$(uuidgen)"
+for i in 1 2; do
+  curl -si --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+    -X POST "$BASE/evaluations" -H 'content-type: application/json' -H "Idempotency-Key: $KEY" \
+    --data '{"name":"Ana","cpf":"390.533.447-05","credit_score":780,"current_invoice_cents":50000,"credit_limit_cents":500000,"monthly_spend_cents":[80000,90000,70000]}'
+done
+# The same decision_id twice; the second response has idempotent-replayed: true.
+```
+
+The same key with another body returns `422 {"error":"idempotency_key_reused"}`.
+Keys live 24 hours ([ADR 0005](docs/adr/0005-idempotency-key-claimed-with-a-conditional-write.md)).
+
 ### Submit a batch
 
 ```bash
@@ -189,8 +208,11 @@ in [Benchmarks on Floci](docs/architecture.md#benchmarks-on-floci).
 
 Floci differs from AWS in ways that change what a local run proves:
 
-- Its CloudFormation ignores point-in-time recovery and the SQS batching
-  window. The CDK tests assert both in the template.
+- Its CloudFormation ignores point-in-time recovery, the SQS batching
+  window, and the table's TTL. The CDK tests assert all three in the
+  template. Expired idempotency keys stay in the table on Floci, but the
+  claim's condition treats them as absent, so keys still expire after 24
+  hours.
 - A failed update can leave an API, a function, and a table behind.
   `make api-url` asks the stack for its own API, so it never picks one of
   those.

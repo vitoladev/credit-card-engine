@@ -59,6 +59,7 @@ flowchart LR
   end
 
   sync --> api --> fn --> ev
+  fn -->|"PutItem IDEMPOTENCY# if absent (Idempotency-Key)"| ddb
   fn -->|"DECISION# / RESULT"| ddb
   batch --> api --> fn -->|"BatchWriteItem ITEM#"| ddb
   ddb --> stream --> relay -->|"SendMessageBatch, QUEUED only"| q --> worker --> ev
@@ -306,10 +307,15 @@ One DynamoDB table, `Decisions`, with generic keys `pk` (string) and `sk`
 |---|---|---|
 | `DECISION#<decision_id>` | `RESULT` | `customer` (input JSON), `result` (decision JSON) |
 | `BATCH#<batch_id>` | `ITEM#<item_id>` | `item_id`, `customer` (input JSON), `status`, `attempts`, `result` once decided |
+| `IDEMPOTENCY#<key>` | `KEY` | `fingerprint`, `owner`, `state`, `lease_until`, `expires_at` (TTL), `status_code` and `body` once `DONE` ([ADR 0005](adr/0005-idempotency-key-claimed-with-a-conditional-write.md)) |
 
 A batch is its item rows. There is no batch row: an unknown batch is a
 partition with no rows. `item_id` is a version 7 UUID, so a Query on the
 partition returns items in submission order.
+
+An `IDEMPOTENCY#` row holds one `Idempotency-Key` for 24 hours: the table's
+TTL attribute is `expires_at`. It carries no customer data, only the
+fingerprint of the request and the response it replays.
 
 Each batch item stores the input and the item status together. Stored
 decisions and batch items keep the full CPF and name with no TTL. They are
@@ -337,6 +343,8 @@ flowchart TB
   dlqCmd --> tel
   httpapi --> evaluate
   httpapi --> batch
+  httpapi --> idem["idempotency"]
+  ddbA --> idem
   sqs --> batch
   ddbA --> batch
   ddbA --> evaluate
@@ -474,13 +482,23 @@ Wire types are `events.APIGatewayV2HTTPRequest` and `HTTPResponse`.
 | Method | Path | Body | Response |
 |---|---|---|---|
 | `GET` | `/health` | — | `{"status":"ok"}` |
-| `POST` | `/evaluations` | one `Customer` | `200` + `{decision_id, ...Result}` (sync, 1 s SLO); `400` malformed JSON; `422` invalid customer; `503 {"error":"decision_not_recorded"}` when the decision cannot be stored |
+| `POST` | `/evaluations` | one `Customer` | `200` + `{decision_id, ...Result}` (sync, 1 s SLO); `400` malformed JSON; `422` invalid customer; `503 {"error":"decision_not_recorded"}` when the decision cannot be stored. Takes `Idempotency-Key` (see below) |
 | `GET` | `/evaluations/{id}` | — | `200` + the same `{decision_id, ...Result}`; `404 {"error":"not_found"}` |
-| `POST` | `/evaluations/batch` | `{customers:[...]}` or array, at most `BATCH_SIZE` (default 100, max 1000) | `202` + `{batch_id, queued, item_ids}`, `item_ids` in the order of the customers; `422` with indexed violations or `batch_too_large`, nothing stored; `503 {"error":"batch_not_recorded"}` |
+| `POST` | `/evaluations/batch` | `{customers:[...]}` or array, at most `BATCH_SIZE` (default 100, max 1000) | `202` + `{batch_id, queued, item_ids}`, `item_ids` in the order of the customers; `422` with indexed violations or `batch_too_large`, nothing stored; `503 {"error":"batch_not_recorded"}`. Takes `Idempotency-Key` |
 | `GET` | `/batches/{id}/items?status=&limit=&cursor=` | — | `200` + one page of items; `400 {"error":"invalid_status"}`, `{"error":"invalid_limit","max":1000}`, or `{"error":"invalid_cursor"}`; `404 {"error":"not_found"}` |
 | `POST` | `/batches/{id}/items/{item_id}/retry` | — | `202 {"attempts","item_id"}`; `409 {"error":"invalid_transition"}` if not `FAILED`; `409 {"error":"max_attempts_reached"}` at 5 attempts; `404` |
 | `POST` | `/batches/{id}/items/{item_id}/cancel` | — | `200 {"item_id","status":"CANCELLED"}`, again `200` on a cancelled item; `409 {"error":"invalid_transition"}` otherwise; `404` |
 | `POST` | `/batches/{id}/retry-failed` | — | `202 {"requeued": n}`; `404` |
+
+Both `POST /evaluations` routes take an optional `Idempotency-Key` header
+([ADR 0005](adr/0005-idempotency-key-claimed-with-a-conditional-write.md)).
+The same key with the same route and body replays the first `2xx` response
+with `idempotent-replayed: true`, and nothing is evaluated or stored again.
+The same key with another body is `422 {"error":"idempotency_key_reused"}`,
+while the first request still runs is `409 {"error":"idempotency_key_in_progress"}`,
+and a key that is empty, longer than 255, or not visible ASCII is
+`400 {"error":"invalid_idempotency_key","max_length":255}`. A non-`2xx`
+response frees the key. Keys live 24 hours.
 
 One page of items, `GET /batches/{id}/items?limit=2`:
 
@@ -510,7 +528,7 @@ The last page has no `next_cursor`.
 | Lambda `provided.al2023` arm64 | `GoFunction` | Go binary, cold start low enough for the SLO |
 | Timeout 3 s / 256 MB | — | SLO is 1 s. 3 s is a safety cap, not the budget. |
 | Reserved concurrency 8, 4, 2, and 2 | Floci only (`AWS_ENDPOINT_URL` set at synth) | Floci starts one container per concurrent invoke. The cap keeps `make loadtest` from stalling the API. Real AWS stays unreserved. |
-| DynamoDB on-demand | keys `pk` and `sk` (see [Data model](#data-model)) | Batched writes on submit, one conditional `UpdateItem` per transition. |
+| DynamoDB on-demand | keys `pk` and `sk` (see [Data model](#data-model)), TTL on `expires_at` | Batched writes on submit, one conditional `UpdateItem` per transition, one conditional `PutItem` per idempotency key. |
 | AWS managed encryption | AWS managed | Default encryption at rest. |
 | IAM authorizer | every route except `GET /health` | SigV4 on `execute-api`. `/health` stays open for probes. |
 | Table stream + `Relay` Lambda | `NEW_IMAGE`, batch 100 or 1 s window, `TRIM_HORIZON`, bisect on error, `ReportBatchItemFailures` | The outbox of ADR 0004: HTTP only writes the items, and the relay publishes the queued ones with `SendMessageBatch`. |
