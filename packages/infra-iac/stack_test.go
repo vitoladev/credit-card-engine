@@ -74,11 +74,12 @@ func TestRelayIsTheOutboxOfTheTableStream(t *testing.T) {
 		"StreamSpecification": map[string]any{"StreamViewType": "NEW_IMAGE"},
 	})
 	template.HasResourceProperties(jsii.String("AWS::Lambda::EventSourceMapping"), map[string]any{
-		"StartingPosition":           "TRIM_HORIZON",
-		"BatchSize":                  streamBatchSize,
-		"BisectBatchOnFunctionError": true,
-		"FunctionResponseTypes":      []any{"ReportBatchItemFailures"},
-		"FunctionName":               map[string]any{"Ref": assertions.Match_StringLikeRegexp(jsii.String(relayFunctionID))},
+		"StartingPosition":               "TRIM_HORIZON",
+		"BatchSize":                      streamBatchSize,
+		"MaximumBatchingWindowInSeconds": relayBatchingWindow,
+		"BisectBatchOnFunctionError":     true,
+		"FunctionResponseTypes":          []any{"ReportBatchItemFailures"},
+		"FunctionName":                   map[string]any{"Ref": assertions.Match_StringLikeRegexp(jsii.String(relayFunctionID))},
 	})
 	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
 		"MetricName": "IteratorAge",
@@ -155,7 +156,7 @@ func TestStackHasTheDLQAndItsConsumer(t *testing.T) {
 	template.HasResourceProperties(jsii.String("AWS::SQS::Queue"), map[string]any{
 		"RedrivePolicy": map[string]any{
 			"deadLetterTargetArn": map[string]any{"Fn::GetAtt": []any{*dlq, "Arn"}},
-			"maxReceiveCount":     3,
+			"maxReceiveCount":     maxReceiveCount,
 		},
 	})
 	for _, source := range []struct {

@@ -41,10 +41,10 @@ flowchart LR
     api["HTTP API v2\n1200 rps / 2400 burst"]
     fn["Lambda HTTP\narm64 / 3s"]
     stream[["DynamoDB Streams\nNEW_IMAGE, 24h"]]
-    relay["Lambda Relay\nbatch 100, bisect, partial failures"]
+    relay["Lambda Relay\nbatch 100 or 1 s, bisect, partial failures"]
     q["SQS EvaluationJobs"]
     worker["Lambda worker\nSQS batch 10, partial failures"]
-    dlq["SQS EvaluationJobsDLQ\n14d, after 3 receives"]
+    dlq["SQS EvaluationJobsDLQ\n14d, after 5 receives"]
     dlqFn["Lambda DlqConsumer\nSQS batch 10, partial failures"]
     ddb[("DynamoDB\npk / sk")]
     logs["CloudWatch Logs\n14d"]
@@ -64,7 +64,7 @@ flowchart LR
   ddb --> stream --> relay -->|"SendMessageBatch, QUEUED only"| q --> worker --> ev
   worker -->|"GetItem"| ddb
   worker -->|"UpdateItem QUEUED → APPROVED | DENIED"| ddb
-  q -->|"maxReceiveCount 3"| dlq --> dlqFn
+  q -->|"maxReceiveCount 5"| dlq --> dlqFn
   dlqFn -->|"UpdateItem QUEUED → FAILED"| ddb
   recover --> api --> fn -->|"UpdateItem FAILED → QUEUED / CANCELLED"| ddb
   getOne --> api
@@ -124,7 +124,11 @@ If storing the batch fails, the handler returns
 `503 {"error":"batch_not_recorded"}`.
 
 The table's stream carries each new row to the `Relay` Lambda
-([ADR 0004](adr/0004-relay-queued-items-from-the-table-stream.md)). The relay
+([ADR 0004](adr/0004-relay-queued-items-from-the-table-stream.md)). Its event
+source mapping invokes the relay when 100 records are ready or 1 s after the
+first one, whichever comes first, so a quiet stream still flows within a
+second. A stream has no visibility timeout: the mapping keeps a checkpoint per
+shard. The relay
 reads each record into an item event, `{event_id, batch_id, item_id, attempt,
 status}`, with `event_id` = `<batch_id>:<item_id>:<attempt>:<status>`.
 `batch.Relay` publishes the events whose status is `QUEUED` with
@@ -212,7 +216,7 @@ redelivery that hits `ErrInvalidTransition` are not listed. The event source
 has `ReportBatchItemFailures`, so SQS redelivers only the failed records.
 
 `EvaluationJobs` sends a record to `EvaluationJobsDLQ` (14-day retention)
-after `maxReceiveCount=3` receives. The `DlqConsumer` Lambda calls
+after `maxReceiveCount=5` receives (the AWS recommendation for a Lambda source). The `DlqConsumer` Lambda calls
 `batch.DeadLetter` for each record, which calls
 `Items.Fail(batch_id, item_id, attempt)` and makes the item `FAILED`. The DLQ
 is a signal, not a
@@ -221,7 +225,7 @@ recovery path. Nothing redrives the DLQ
 
 A record whose batch or item does not exist (for example left over from a
 deleted stack) can never succeed. The worker treats that record like any
-other failure, so the record reaches the DLQ after 3 receives instead of
+other failure, so the record reaches the DLQ after 5 receives instead of
 looping forever. The DLQ consumer acknowledges that record, a record it
 cannot parse, and a record whose item already moved on (decided, failed, or
 retried on a newer attempt). The consumer reports a record as failed only
@@ -441,7 +445,7 @@ in that list.
 | Extensibility | Ordered `rules.Rule` list and score bands, assembled in `rules.NewPolicy()`. `architecture_test.go` keeps domain, rules, and the modules off AWS. |
 | LGPD | CPF masked on `Result` and in logs. Encryption at rest on the table and both queues (SSE-SQS), and the queues deny requests not over TLS. IAM authorizer on every HTTP route except `/health`. Full CPF and name stay in DynamoDB. Queue messages and the relay carry no customer data. The HTTP Lambda has no access to the queue. |
 | Observability | 14-day logs. One EMF line per decision (`Approved`/`Denied`, `DenyByReason`, `DecisionLatencyMs`) and per failed item (`ItemsFailed`). Dashboard `CreditCardEngine`. Alarms on API 5xx, worker errors, DLQ consumer errors, DLQ depth, relay iterator age over 60 s, and HTTP p99 > 800 ms. |
-| Resilience | `rules` has no I/O. `evaluate` records after the decision, and the sync path fails closed with `503`. On batch, SQS isolates HTTP from the worker. The worker reports partial batch failures, a record that fails 3 receives goes to the DLQ, and the DLQ consumer marks its item `FAILED` for an operator to retry or cancel. Submit and retry only write the item; the table's stream feeds a relay that publishes, and retries a failed publish for up to 24 h (ADR 0004). Every transition is conditional. On-demand table with point-in-time recovery (35 days). 5xx alarm on the sync path. |
+| Resilience | `rules` has no I/O. `evaluate` records after the decision, and the sync path fails closed with `503`. On batch, SQS isolates HTTP from the worker. The worker reports partial batch failures, a record that fails 5 receives goes to the DLQ, and the DLQ consumer marks its item `FAILED` for an operator to retry or cancel. Submit and retry only write the item; the table's stream feeds a relay that publishes, and retries a failed publish for up to 24 h (ADR 0004). Every transition is conditional. On-demand table with point-in-time recovery (35 days). 5xx alarm on the sync path. |
 
 ### Benchmarks on Floci
 
@@ -509,9 +513,9 @@ The last page has no `next_cursor`.
 | DynamoDB on-demand | keys `pk` and `sk` (see [Data model](#data-model)) | Batched writes on submit, one conditional `UpdateItem` per transition. |
 | AWS managed encryption | AWS managed | Default encryption at rest. |
 | IAM authorizer | every route except `GET /health` | SigV4 on `execute-api`. `/health` stays open for probes. |
-| Table stream + `Relay` Lambda | `NEW_IMAGE`, batch 100, `TRIM_HORIZON`, bisect on error, `ReportBatchItemFailures` | The outbox of ADR 0004: HTTP only writes the items, and the relay publishes the queued ones with `SendMessageBatch`. |
+| Table stream + `Relay` Lambda | `NEW_IMAGE`, batch 100 or 1 s window, `TRIM_HORIZON`, bisect on error, `ReportBatchItemFailures` | The outbox of ADR 0004: HTTP only writes the items, and the relay publishes the queued ones with `SendMessageBatch`. |
 | Worker + SQS | 1000 req/s batch | The worker reads the item, evaluates, and decides it. Batch size 10 with `ReportBatchItemFailures`. |
-| `EvaluationJobsDLQ` | `maxReceiveCount=3`, 14-day retention | A record that keeps failing stops retrying and becomes a failed item ([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)). |
+| `EvaluationJobsDLQ` | `maxReceiveCount=5`, 14-day retention | A record that keeps failing stops retrying and becomes a failed item ([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)). |
 | `DlqConsumer` Lambda | `cmd/dlq`, same runtime and sizing as the others, 14-day log group | Batch size 10 with `ReportBatchItemFailures`. Read and write on the table and consume on the DLQ, nothing else. |
 | Routes | `POST /evaluations`, `GET /evaluations/{id}`, `POST /evaluations/batch`, `GET /batches/{id}/items`, `POST /batches/{id}/items/{item_id}/retry`, `POST /batches/{id}/items/{item_id}/cancel`, `POST /batches/{id}/retry-failed`, `GET /health` | One HTTP Lambda serves every route. The HTTP, worker, and DLQ Lambdas read and write the table. Only the relay sends to the queue. |
 

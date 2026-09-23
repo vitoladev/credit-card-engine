@@ -34,7 +34,9 @@ const (
 	maxBatchSize     = 1000
 
 	// A record that fails this many receives moves to the DLQ (ADR 0001).
-	maxReceiveCount  = 3
+	// AWS recommends at least 5 for a Lambda source, so a short outage does
+	// not fail an item.
+	maxReceiveCount  = 5
 	dlqRetentionDays = 14
 	sqsBatchSize     = 10
 	// The worker takes up to 50 messages per invocation and handles them
@@ -45,8 +47,11 @@ const (
 	// The relay reads the table stream in batches of this size. A record
 	// that keeps failing is retried until it expires (24 h); the IteratorAge
 	// alarm fires long before that.
-	streamBatchSize    = 100
-	iteratorAgeAlarmMs = 60_000
+	streamBatchSize = 100
+	// The relay waits up to this long to fill a batch: near real time, and
+	// fewer invocations when traffic is low.
+	relayBatchingWindow = 1
+	iteratorAgeAlarmMs  = 60_000
 	// The batch SLO the ItemEndToEnd alarm guards, and the queue backlog that
 	// breaks it first.
 	itemEndToEndAlarmMs = 5_000

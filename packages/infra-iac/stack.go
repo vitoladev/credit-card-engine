@@ -87,6 +87,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 	relay.AddEventSource(awslambdaeventsources.NewDynamoEventSource(table, &awslambdaeventsources.DynamoEventSourceProps{
 		StartingPosition:        awslambda.StartingPosition_TRIM_HORIZON,
 		BatchSize:               jsii.Number(streamBatchSize),
+		MaxBatchingWindow:       awscdk.Duration_Seconds(jsii.Number(relayBatchingWindow)),
 		BisectBatchOnError:      jsii.Bool(true),
 		ReportBatchItemFailures: jsii.Bool(true),
 	}))

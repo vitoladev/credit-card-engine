@@ -56,6 +56,9 @@ func (r *recorder) ItemFailed(batchID, itemID string, attempt int) {
 	r.failed = append(r.failed, itemEvent{batchID: batchID, itemID: itemID, attempt: attempt})
 }
 
+// maxReceiveCount is the queue's redrive setting in the stack (ADR 0001).
+const maxReceiveCount = 5
+
 // harness is the batch module over DynamoDB, its stream, and SQS on Floci.
 // Tests move the stream into the relay and the queue into Process or
 // DeadLetter themselves, the way the event source mappings would.
@@ -157,12 +160,12 @@ func (h *harness) deadLetter(itemEvents ...batch.ItemEvent) {
 
 func (h *harness) drain() { h.t.Helper(); h.process(h.take()...) }
 
-// failThroughDLQ makes the store fail on every one of the maxReceiveCount=3
+// failThroughDLQ makes the store fail on every one of the maxReceiveCount=5
 // deliveries of the event, then dead-letters it, as SQS would.
 func (h *harness) failThroughDLQ(a batch.ItemEvent) {
 	h.t.Helper()
-	h.faults.FailCalls("UpdateItem", 3)
-	for range 3 {
+	h.faults.FailCalls("UpdateItem", maxReceiveCount)
+	for range maxReceiveCount {
 		if err := h.b.Process(h.t.Context(), a); !errors.Is(err, flocitest.ErrInjected) {
 			h.t.Fatalf("process on a store failure: err=%v", err)
 		}

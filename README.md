@@ -112,7 +112,7 @@ payments) are `DENIED`.
 
 ### Recover a failed item
 
-A batch item that still fails after 3 deliveries lands in the DLQ. The DLQ
+A batch item that still fails after 5 deliveries lands in the DLQ. The DLQ
 consumer marks it `FAILED`. An operator then retries or cancels it, at most
 5 attempts per item:
 

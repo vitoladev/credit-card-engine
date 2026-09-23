@@ -12,7 +12,8 @@ status: accepted
 A credit decision that is not recorded cannot be audited, so a single
 evaluation returns `503` when the decision cannot be persisted, even though the
 rules already produced a result. In a batch, a batch item that still fails after
-SQS redelivery (`maxReceiveCount=3`) lands in the DLQ and becomes a failed item.
+SQS redelivery (`maxReceiveCount`, 5 since #20 following the AWS
+recommendation for a Lambda source) lands in the DLQ and becomes a failed item.
 From there an operator retries or cancels that item through the API, without
 engineering involvement, with at most 5 attempts per item. Decisions are keyed
 by the item's index in the batch, so a retry overwrites instead of duplicating.
