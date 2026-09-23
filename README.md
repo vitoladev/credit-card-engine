@@ -209,10 +209,9 @@ in [Benchmarks on Floci](docs/architecture.md#benchmarks-on-floci).
 Floci differs from AWS in ways that change what a local run proves:
 
 - Floci serves about 10 Lambda invocations a second in total, so a local
-  `make loadtest` reaches ~10 req/s whatever `LOADTEST_RATE` asks for. The
-  Dev Container sets `FLOCI_SERVICES_LAMBDA_POLL_INTERVAL_MS=100` so the
-  queue drains at ~12 items/s instead of ~10. Recreate the `floci` service
-  after changing it.
+  `make loadtest` reaches ~10 req/s whatever `LOADTEST_RATE` asks for. See
+  [docs/loadtest.md](docs/loadtest.md) for the runs and the limits behind
+  them.
 
 - Its CloudFormation ignores point-in-time recovery, the SQS batching
   window, and the table's TTL. The CDK tests assert all three in the
