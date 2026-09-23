@@ -4,7 +4,8 @@ A revolving-credit rules engine in Go. CDK in Go describes the HTTP API,
 Lambda, SQS, and DynamoDB.
 
 The cut, the rules, and the API are in [Architecture](docs/architecture.md).
-You do not need an AWS account.
+You do not need an AWS account: everything runs on Floci, a local AWS
+emulator, inside a Dev Container.
 
 ## Run the engine in the Dev Container
 
@@ -107,7 +108,7 @@ error cases nothing is stored or queued.
 A `BATCH_SIZE` outside 1..1000 fails the synth. To raise the cap, run
 `BATCH_SIZE=1000 make local-deploy`.
 
-The worker drains SQS and decides each batch item. Then list the items:
+The worker decides each batch item after the request returns. To list the items:
 
 ```bash
 curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
@@ -199,34 +200,32 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 | `make floci-up` and `make floci-down` | Only the `floci` service from `.devcontainer/docker-compose.yml`. No-op inside the Dev Container. |
 | `make floci-reap` | Removes this stack's Floci Lambda containers (Evaluate, Relay, Worker, DlqConsumer). The Floci sidecar stays up. |
 
-`make loadtest` runs at `LOADTEST_RATE` req/s (default 100) for 10 s. On
-Floci, k6 stays at 8 VUs and the Lambdas stay at reserved concurrency 8 (Evaluate), 4 (Worker), and 2
-(Relay, DlqConsumer). Local thresholds are p95 under 2 s and under 1% errors. The target reaps
-Floci Lambda containers afterward, on success or fail. The 1000 req/s NFR
-runs are against a real AWS stack. Results and the Floci limits behind them are
-in [Benchmarks on Floci](docs/architecture.md#benchmarks-on-floci).
+`make loadtest` runs k6 at `LOADTEST_RATE` req/s (default 100) for
+`LOADTEST_DURATION` (default 10 s), then removes the Floci Lambda containers,
+whether the run passed or failed. [docs/loadtest.md](docs/loadtest.md) has
+every setting, the results, and the commands for a real AWS stack.
 
-Floci differs from AWS in ways that change what a local run proves:
+## What a local run does not prove
+
+Floci differs from AWS in ways that change what a local run shows:
 
 - Floci serves about 10 Lambda invocations a second in total, so a local
-  `make loadtest` reaches ~10 req/s whatever `LOADTEST_RATE` asks for. See
-  [docs/loadtest.md](docs/loadtest.md) for the runs and the limits behind
-  them.
-
-- Its CloudFormation ignores point-in-time recovery, the SQS batching
-  window, and the table's TTL. The CDK tests assert all three in the
-  template. Expired idempotency keys stay in the table on Floci, but the
-  claim's condition treats them as absent, so keys still expire after 24
-  hours.
-- A failed update can leave an API, a function, and a table behind.
-  `make api-url` asks the stack for its own API, so it never picks one of
-  those.
+  `make loadtest` reaches about 10 req/s whatever `LOADTEST_RATE` asks for.
+- Its CloudFormation ignores point-in-time recovery, the SQS batching window,
+  and the table's TTL, and it stubs log metric filters. The CDK tests assert
+  all four in the template. Expired idempotency keys stay in the table on
+  Floci, but the claim's condition treats them as absent, so keys still
+  expire after 24 hours.
+- A failed update can leave an API, functions, event source mappings, and a
+  table behind. `make api-url` asks the stack for its own API, so it never
+  picks a leftover one.
 
 ## Layout
 
 ```
-apps/engine/          The evaluate and batch modules, the rules, and the http, worker, and dlq commands
+apps/engine/          The evaluate, batch, and idempotency modules, the rules, and the http, relay, worker, and dlq commands
 packages/infra-iac/   CDK in Go
-packages/loadtest/    k6 (batch via SQS, LOADTEST_RATE req/s, default 100)
-docs/                 architecture.md
+packages/loadtest/    k6 load test for both evaluation routes
+docs/                 architecture.md, loadtest.md, CODING_STANDARDS.md, and the ADRs in adr/
+CONTEXT.md            The glossary: the name of each domain concept
 ```

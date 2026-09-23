@@ -52,7 +52,7 @@ commit and says why.
   for the same input.
 - A rule is one constructor in its own file that takes its cutoffs and
   returns a `rules.Rule`, which denies with a stable reason code
-  (`snake_case`, e.g. `score_below_600`). Reason codes are part of the API
+  (`snake_case`, for example `score_below_600`). Reason codes are part of the API
   contract: changing one is a breaking change.
 - The policy (rule order and score bands) is assembled only in
   `rules.NewPolicy()`. Adding or changing a rule never edits a module.
@@ -125,7 +125,8 @@ commit and says why.
 - Infra changes are asserted in the CDK stack test.
 - A slice that changes runtime behavior is also run against local Floci
   through the Dev Container, and a change on the batch path runs the k6 load
-  test (`make loadtest`, 100 req/s).
+  test (`make loadtest`, 100 req/s). Floci reaches about 10 req/s; see
+  [loadtest.md](loadtest.md).
 
 ## 9. Infra (`packages/infra-iac`)
 
@@ -134,7 +135,10 @@ commit and says why.
 - Lambdas: `provided.al2023`, arm64, no VPC. The 1 s SLO budget rules out
   anything on the cold path that adds an ENI or a network hop.
 - Grant least privilege with the construct's `Grant*` methods on the specific
-  resource. No wildcard IAM statements.
+  resource. Write no wildcard IAM statement. CDK generates two that stay,
+  because AWS does not scope these actions to a resource: the X-Ray writes
+  (`xray:PutTraceSegments`, `xray:PutTelemetryRecords`) and the relay's
+  `dynamodb:ListStreams`.
 
 ## 10. Style and lint
 

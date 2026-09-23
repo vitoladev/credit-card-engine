@@ -29,7 +29,7 @@ is.
 - **Keep the report and add paging to each list.** Rejected: four cursors on
   one response, and the counters and total still need the whole batch.
 - **Keep counters on a batch row.** Rejected: every transition would write that
-  one row, the hot spot that 3b26ebe removed.
+  one row, the hot spot that dropping the `META` counters removed.
 - **Keep the index as the item ID.** Rejected: a caller cannot tell which
   position a result belongs to without the original array, and the index
   leaks the storage layout into every route.
