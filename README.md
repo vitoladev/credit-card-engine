@@ -171,9 +171,10 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 | Target | What it does |
 |---|---|
 | `make test` | `turbo run test` for the engine, the Lambdas, and the stack. Then reaps Floci Lambda containers this stack left behind. |
-| `make loadtest` | k6 against `POST /evaluations/batch` on a local deploy. |
+| `make loadtest` | k6 against `POST /evaluations/batch` on a local deploy. `LOADTEST_PATH=single` targets `POST /evaluations` instead. |
 | `make local-bootstrap` | CDK bootstrap on Floci account `000000000000`. |
-| `make local-deploy` | `cdklocal deploy`. |
+| `make local-deploy` | `cdklocal deploy`. Works once per stack on Floci. |
+| `make local-redeploy` | `local-destroy` then `local-deploy`. Use it to deploy a change: Floci cannot update the relay's stream event source mapping in place. The table starts empty. |
 | `make api-url` | Prints the HTTP API base URL on the emulator. |
 | `make synth` | `cdk synth` (template, no deploy). |
 | `make floci-up` and `make floci-down` | Only the `floci` service from `.devcontainer/docker-compose.yml`. No-op inside the Dev Container. |
@@ -183,7 +184,16 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 Floci, k6 stays at 8 VUs and the Lambdas stay at reserved concurrency 8 (Evaluate), 4 (Worker), and 2
 (Relay, DlqConsumer). Local thresholds are p95 under 2 s and under 1% errors. The target reaps
 Floci Lambda containers afterward, on success or fail. The 1000 req/s NFR
-run is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack.
+runs are against a real AWS stack. Results and the Floci limits behind them are
+in [Benchmarks on Floci](docs/architecture.md#benchmarks-on-floci).
+
+Floci differs from AWS in ways that change what a local run proves:
+
+- Its CloudFormation ignores point-in-time recovery and the SQS batching
+  window. The CDK tests assert both in the template.
+- A failed update can leave an API, a function, and a table behind.
+  `make api-url` asks the stack for its own API, so it never picks one of
+  those.
 
 ## Layout
 

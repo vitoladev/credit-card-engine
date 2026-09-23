@@ -269,6 +269,7 @@ recorded.
 | `DenyByReason` | decision is denied | `reason` |
 | `DecisionLatencyMs` | every recorded decision | none |
 | `ItemsFailed` | `batch` moved the item to `FAILED` (DLQ consumer) | none |
+| `ItemEndToEndMs` | a batch item is decided: time from `queued_at` (submit or retry) to the decision | none |
 
 Decision line properties: `decision`, `reason`, `latency_ms`, `cpf_masked`,
 and either `decision_id` (sync) or `batch_id` and `item_id` (batch). Failed-item
@@ -276,11 +277,21 @@ line properties: `batch_id`, `item_id`, `attempt`. Logs, EMF properties, and
 metric dimensions never include a customer name or a full CPF.
 
 The CloudWatch dashboard `CreditCardEngine` shows evaluations per minute,
-approval rate, `DenyByReason` by reason, `DecisionLatencyMs` p99, HTTP Lambda
-p99 duration, API 5xx, DLQ visible messages, and `ItemsFailed`. Missing data
-is not breaching. Alarms: API Gateway 5xx ≥ 1 in 1 minute; worker errors ≥ 1
-in 1 minute; DLQ consumer errors ≥ 1 in 1 minute; DLQ visible messages > 0
-for 5 minutes; HTTP Lambda p99 > 800 ms for 3 minutes.
+approval rate, `DenyByReason` by reason, `DecisionLatencyMs` p99,
+`ItemEndToEndMs` p99, the age of the oldest queued message, HTTP Lambda p99
+duration, API 5xx, DLQ visible messages, and `ItemsFailed`. Missing data is
+not breaching. Alarms:
+
+| Alarm | Fires when |
+|---|---|
+| `Api5xx` | API Gateway 5xx ≥ 1 in 1 minute |
+| `WorkerErrors` | worker errors ≥ 1 in 1 minute |
+| `DlqConsumerErrors` | DLQ consumer errors ≥ 1 in 1 minute |
+| `DlqVisible` | DLQ visible messages > 0 for 5 minutes |
+| `EvaluateLatency` | HTTP Lambda p99 > 800 ms for 3 minutes (sync SLO is 1 s) |
+| `RelayIteratorAge` | the relay is more than 60 s behind the table stream for 3 minutes |
+| `QueueBacklog` | the oldest `EvaluationJobs` message is older than 60 s for 3 minutes |
+| `ItemEndToEnd` | batch item p99 from queued to decided > 5 s for 3 minutes (the batch SLO) |
 
 ## Data model
 
@@ -363,10 +374,12 @@ and nothing is stored or published.
 
 ## Decision
 
-`rules.NewPolicy()` builds a `rules.Policy` from the rule chain and the amount
-policy. The chain is Chain of Responsibility. The first rule that denies
-stops the chain, with one reason. The amount is computed only if every rule
-passes.
+`rules.NewPolicy()` builds a `rules.Policy` from an ordered list of rules and
+the score bands. Each rule is a `rules.Rule`, a function that denies with a
+stable reason code or passes: a Strategy per criterion. `Policy.Evaluate`
+applies them in order, and the first rule that denies decides, with one reason.
+The amount is computed only if every rule passes. To add a rule, write one
+`Rule` function and add it to the list in `NewPolicy()`. Nothing else changes.
 
 ```mermaid
 flowchart TD
@@ -382,9 +395,10 @@ flowchart TD
   amt --> ok["APPROVED"]
 ```
 
-`rules.ScoreBands` implements `rules.AmountPolicy`. A higher score gets a
+The score bands in `NewPolicy()` size an approval. A higher score gets a
 larger share of the credit limit on revolving credit, capped at
-`credit_limit − current_invoice` and never negative.
+`credit_limit − current_invoice` and never negative. Changing a band is a
+number in `NewPolicy()`. Replacing the sizing model changes `policy.go`.
 
 | Score | Factor |
 |---|---|
@@ -421,13 +435,33 @@ in that list.
 
 | Criterion | How the design answers |
 |---|---|
-| Latency ≤ 1 s | Sync engine, no I/O on the sync path. Lambda timeout 3 s, 256 MB, arm64. p99 alarmed at 800 ms. |
+| Latency ≤ 1 s | The sync path evaluates in memory and makes one DynamoDB write. Lambda timeout 3 s, 256 MB, arm64. HTTP p99 is alarmed at 800 ms. The batch path answers after one `BatchWriteItem`; each item's queued-to-decided time is `ItemEndToEndMs`, alarmed at p99 > 5 s. See [Benchmarks on Floci](#benchmarks-on-floci). |
 | Accuracy | Customers validated at the edge (CPF check digits, no negatives). Deterministic rules. Table tests in `domain` and `rules`. Stable reason code per rule. |
-| Scale 10k/min | NFR floor. The cut demonstrates 1000 req/s on batch. HTTP writes the items (202), the relay publishes from the stream, the worker processes batch 10, DynamoDB is on-demand. Stage at 1200 rps / 2400 burst. The 1000 req/s NFR run is `LOADTEST_RATE=1000 make loadtest` against real AWS, 1000/s × 10 s = 10k requests (local default 100 req/s). |
+| Scale 10k/min | HTTP writes the items (202), the relay publishes from the stream, and the worker takes up to 50 messages per invocation (1 s window) and handles them concurrently. DynamoDB is on-demand. Stage throttle is 1200 rps / 2400 burst. On AWS, Lambda scales an SQS source to 5 concurrent batches and then adds up to 300 invocations a minute, up to 1,250. Floci cannot show this: see [Benchmarks on Floci](#benchmarks-on-floci). The 1000 req/s runs against real AWS are `LOADTEST_PATH=single LOADTEST_RATE=1000 make loadtest` and `LOADTEST_PATH=batch LOADTEST_RATE=100 make loadtest`. They have not been run: there is no AWS account in this cut. |
 | Extensibility | Ordered `rules.Rule` list and score bands, assembled in `rules.NewPolicy()`. `architecture_test.go` keeps domain, rules, and the modules off AWS. |
-| LGPD | CPF masked on `Result` and in logs. Encryption at rest managed. IAM authorizer on every HTTP route except `/health`. Full CPF and name stay in DynamoDB. Queue messages and the relay carry no customer data. The HTTP Lambda has no access to the queue. |
+| LGPD | CPF masked on `Result` and in logs. Encryption at rest on the table and both queues (SSE-SQS), and the queues deny requests not over TLS. IAM authorizer on every HTTP route except `/health`. Full CPF and name stay in DynamoDB. Queue messages and the relay carry no customer data. The HTTP Lambda has no access to the queue. |
 | Observability | 14-day logs. One EMF line per decision (`Approved`/`Denied`, `DenyByReason`, `DecisionLatencyMs`) and per failed item (`ItemsFailed`). Dashboard `CreditCardEngine`. Alarms on API 5xx, worker errors, DLQ consumer errors, DLQ depth, relay iterator age over 60 s, and HTTP p99 > 800 ms. |
-| Resilience | `rules` has no I/O. `evaluate` records after the decision, and the sync path fails closed with `503`. On batch, SQS isolates HTTP from the worker. The worker reports partial batch failures, a record that fails 3 receives goes to the DLQ, and the DLQ consumer marks its item `FAILED` for an operator to retry or cancel. Submit and retry only write the item; the table's stream feeds a relay that publishes, and retries a failed publish for up to 24 h (ADR 0004). Every transition is conditional. On-demand table. 5xx alarm on the sync path. |
+| Resilience | `rules` has no I/O. `evaluate` records after the decision, and the sync path fails closed with `503`. On batch, SQS isolates HTTP from the worker. The worker reports partial batch failures, a record that fails 3 receives goes to the DLQ, and the DLQ consumer marks its item `FAILED` for an operator to retry or cancel. Submit and retry only write the item; the table's stream feeds a relay that publishes, and retries a failed publish for up to 24 h (ADR 0004). Every transition is conditional. On-demand table with point-in-time recovery (35 days). 5xx alarm on the sync path. |
+
+### Benchmarks on Floci
+
+Run on Floci in the Dev Container on 2026-09-23, on this branch. The
+numbers are the emulator's ceiling, not the engine's: Floci starts one container
+per Lambda invocation, the local stack caps concurrency (Evaluate 8, Worker 4),
+and Floci's SQS poller makes one `ReceiveMessage` per second.
+
+| Run | Command | Result |
+|---|---|---|
+| Sync, 1000 req/s for 10 s | `LOADTEST_PATH=single LOADTEST_RATE=1000 make loadtest` | 18.5 req/s reached (196 sent, 9,805 dropped by k6 for lack of VUs), 0 errors, HTTP p95 734 ms. The Lambda's own time is p50 373 ms, mostly the emulator's `PutItem`. |
+| Batch, 100 batches × 10 customers | `LOADTEST_PATH=batch LOADTEST_RATE=10 make loadtest` | 89 batches sent (k6 dropped 11 when Floci slowed), 0 errors. All 890 items decided, 0 failed, in 92 s: ~9.7 items/s, because the poller received 10 messages per poll, one poll a second. `ItemEndToEndMs` p50 43 s, p99 81 s, all of it queue wait. An earlier run with the sequential worker decided all 1,000 items of 100 batches (400 approved, 600 denied) at the same ~9.4 items/s, with submit p50 82 ms. |
+
+A worker batch of 50 made Floci worse: its poller received 1 message per poll
+when the batch was over the 10 of one `ReceiveMessage` call. The stack keeps 10
+on Floci and 50 on AWS, where Lambda fills the batch across calls within the
+window.
+
+To reproduce, run `make local-redeploy` first: Floci cannot update the relay's
+stream event source mapping in place, so a second `make local-deploy` fails.
 
 ## API
 
