@@ -87,8 +87,8 @@ The engine has two paths, on purpose:
   each item afterwards, and `GET /batches/{id}/items` lists them.
 
 The sync path fails closed
-([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)): the
-decision is written to DynamoDB before it is returned. If the write fails,
+([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)). The
+handler writes the decision to DynamoDB before it returns it. If the write fails,
 `POST /evaluations` returns `503 {"error":"decision_not_recorded"}` and no
 decision, because a decision that was never recorded cannot be audited. On
 the batch path the handler has already answered `202`, so a failure turns
