@@ -44,7 +44,7 @@ func TestEvaluateRecordsTheDecisionBeforeReturningIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id == "" || got.Decision != domain.Approved || got.CPFMasked != "***05" || got.RevolvingAmountCents != 250_000 {
+	if id == "" || got.Decision != domain.Approved || got.CPFMasked != "390.***.***-05" || got.RevolvingAmountCents != 250_000 {
 		t.Fatalf("id=%q result=%+v", id, got)
 	}
 	stored, err := m.Get(t.Context(), id)

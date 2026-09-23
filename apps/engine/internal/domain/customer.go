@@ -11,10 +11,10 @@ type Customer struct {
 	MonthlySpendCents   []int64 `json:"monthly_spend_cents"`
 }
 
-// MaskCPF keeps the last two digits for operator reports.
+// MaskCPF keeps the first three and last two digits, in CPF punctuation.
 func MaskCPF(cpf string) string {
-	if len(cpf) < 3 {
+	if len(cpf) != 11 {
 		return "***"
 	}
-	return "***" + cpf[len(cpf)-2:]
+	return cpf[:3] + ".***.***-" + cpf[9:]
 }

@@ -262,7 +262,7 @@ func TestSubmittedBatchCompletes(t *testing.T) {
 
 	got := h.items(acc.BatchID)
 	wantStatuses(t, got, batch.Approved, batch.Denied, batch.Approved)
-	want := batch.Entry{ItemID: acc.ItemIDs[0], Name: "Ana", CPFMasked: "***05", Status: batch.Approved, Reasons: []string{"eligible"}, RevolvingAmountCents: 250_000, Attempts: 1}
+	want := batch.Entry{ItemID: acc.ItemIDs[0], Name: "Ana", CPFMasked: "390.***.***-05", Status: batch.Approved, Reasons: []string{"eligible"}, RevolvingAmountCents: 250_000, Attempts: 1}
 	if !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("items[0]=%+v", got[0])
 	}
@@ -342,7 +342,7 @@ func TestFailedItemIsRetriedToCompletion(t *testing.T) {
 
 	got := h.items(id)
 	wantStatuses(t, got, batch.Failed, batch.Denied, batch.Approved)
-	if f := got[0]; f.ItemID != first.ItemID || f.CPFMasked != "***05" || f.Attempts != 1 || len(f.Reasons) != 0 {
+	if f := got[0]; f.ItemID != first.ItemID || f.CPFMasked != "390.***.***-05" || f.Attempts != 1 || len(f.Reasons) != 0 {
 		t.Fatalf("items[0]=%+v", f)
 	}
 	if len(h.emit.failed) != 1 || !reflect.DeepEqual(h.emit.failed[0], itemEvent{batchID: id, itemID: first.ItemID, attempt: 1}) {
@@ -403,7 +403,7 @@ func TestCancelFailedItemIsIdempotent(t *testing.T) {
 	}
 	got := h.items(id)
 	wantStatuses(t, got, batch.Cancelled, batch.Denied, batch.Approved)
-	if got[0].ItemID != first.ItemID || got[0].CPFMasked != "***05" {
+	if got[0].ItemID != first.ItemID || got[0].CPFMasked != "390.***.***-05" {
 		t.Fatalf("items[0]=%+v", got[0])
 	}
 	if _, err := h.b.Retry(t.Context(), id, first.ItemID); !errors.Is(err, batch.ErrInvalidTransition) {

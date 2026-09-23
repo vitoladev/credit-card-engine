@@ -179,7 +179,7 @@ func TestSingleEvaluationRoundTrip(t *testing.T) {
 	if err := json.Unmarshal([]byte(resp.Body), &created); err != nil {
 		t.Fatal(err)
 	}
-	if created.DecisionID == "" || created.Decision != domain.Approved || created.CPFMasked != "***05" {
+	if created.DecisionID == "" || created.Decision != domain.Approved || created.CPFMasked != "390.***.***-05" {
 		t.Fatalf("body=%s", resp.Body)
 	}
 	h.want(h.do("GET", "/evaluations/"+created.DecisionID, ""), http.StatusOK, resp.Body)

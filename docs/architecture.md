@@ -340,7 +340,8 @@ table has no stream, so the name goes nowhere else.
 
 Each batch item stores the input and the item status together. Stored
 decisions and batch items keep the full CPF and name with no TTL. They are
-the audit record. Every API response masks the CPF (`***` + last 2 digits).
+the audit record. Every API response masks the CPF as `390.***.***-05`
+(first three and last two digits).
 
 ## Packages
 
@@ -448,8 +449,8 @@ number in `NewPolicy()`. Replacing the sizing model changes `policy.go`.
 | 600 to 699 | 30% |
 | < 600 | never reaches here. `min_score` denies |
 
-Money is integer cents. Reports and logs use a masked CPF (`***` + last 2
-digits), never the raw CPF.
+Money is integer cents. Reports and logs use a masked CPF (`390.***.***-05`),
+never the raw CPF.
 
 ## Why these rules
 
@@ -528,9 +529,9 @@ One page of items, `GET /batches/{id}/items?limit=2`:
 {
   "batch_id": "b5e2d9a0-1c3f-4e8b-a7d6-9f0c2e4b8a13",
   "items": [
-    {"item_id": "0199a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b", "name": "Ana Souza", "cpf_masked": "***05",
+    {"item_id": "0199a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1b", "name": "Ana Souza", "cpf_masked": "390.***.***-05",
      "status": "APPROVED", "reasons": ["eligible"], "revolving_amount_cents": 250000, "attempts": 1},
-    {"item_id": "0199a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1c", "name": "Bruno Lima", "cpf_masked": "***09",
+    {"item_id": "0199a1b2-7c3d-7e4f-8a5b-6c7d8e9f0a1c", "name": "Bruno Lima", "cpf_masked": "123.***.***-09",
      "status": "FAILED", "reasons": [], "revolving_amount_cents": 0, "attempts": 1}
   ],
   "next_cursor": "MDE5OWExYjItN2MzZC03ZTRmLThhNWItNmM3ZDhlOWYwYTFj"

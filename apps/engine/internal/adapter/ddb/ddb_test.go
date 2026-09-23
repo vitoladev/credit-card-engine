@@ -111,7 +111,7 @@ func ids(items []batch.Item) []string {
 
 func TestDecisionRoundTrip(t *testing.T) {
 	st := newStore(t)
-	r := domain.Result{Name: "Ana", CPFMasked: "***05", Decision: domain.Approved, RevolvingAmountCents: 250_000, Reasons: []string{"eligible"}}
+	r := domain.Result{Name: "Ana", CPFMasked: "390.***.***-05", Decision: domain.Approved, RevolvingAmountCents: 250_000, Reasons: []string{"eligible"}}
 	if err := st.Save(t.Context(), "d1", domain.Customer{Name: "Ana", CPF: "39053344705"}, r); err != nil {
 		t.Fatal(err)
 	}

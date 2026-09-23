@@ -32,7 +32,7 @@ runtime:
     code: |-
       test("Approved: Ana", function () {
         expect(res.body.decision).to.equal("APPROVED");
-        expect(res.body.cpf_masked).to.equal("***05");
+        expect(res.body.cpf_masked).to.equal("390.***.***-05");
       });
   - type: after-response
     code: bru.setVar("decisionId", res.body.decision_id);
