@@ -10,23 +10,29 @@ emulator, inside a Dev Container.
 
 ## Run the engine in the Dev Container
 
-You need Docker, and Cursor or VS Code with the Dev Containers extension.
-
-1. Open this folder.
-2. Run **Reopen in Container** from the Command Palette.
-3. Wait until `postCreate` finishes (`aws-cdk`, `cdklocal`, `go work sync`)
-   and Floci answers at `http://floci:4566`.
-4. In the container terminal, run:
+You need Docker and Node (for `npx`). From the repo root:
 
 ```bash
-make test
-make local-bootstrap
-make local-deploy
+npx --yes @devcontainers/cli up --workspace-folder .
 ```
 
-The image already has Go 1.27, Node 22, AWS CLI, `cdklocal`, Turborepo, and
-k6. Dummy credentials (`test` / `test`) are already in the environment.
-Compose starts Floci.
+Wait until that command finishes. It installs Go 1.27, Node 22, AWS CLI, k6,
+CDK, and `cdklocal`, then waits until Floci answers at `http://floci:4566`.
+Dummy credentials (`test` / `test`) are already in the environment.
+
+Then, still from the repo root:
+
+```bash
+npx --yes @devcontainers/cli exec --workspace-folder . make test
+npx --yes @devcontainers/cli exec --workspace-folder . make local-bootstrap
+npx --yes @devcontainers/cli exec --workspace-folder . make local-deploy
+```
+
+Every later `make` and `curl` in this README is that `exec` line, with the
+command after `.`. Git stays on the host.
+
+Cursor or VS Code with the Dev Containers extension does the same stack:
+**Reopen in Container**, then run `make` in the container terminal.
 
 ### Call the API
 
@@ -176,7 +182,7 @@ CloudFormation prints `ApiUrl` as the AWS hostname. Ignore that value. Use
 make local-destroy
 ```
 
-Close the Dev Container to stop Compose (`shutdownAction: stopCompose`).
+Stop Compose with `docker compose -f .devcontainer/docker-compose.yml down`.
 
 ## Run without the Dev Container
 
