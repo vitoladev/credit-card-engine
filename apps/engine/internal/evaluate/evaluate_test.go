@@ -32,10 +32,10 @@ func (r *recorder) Evaluated(decisionID string, res domain.Result, _ time.Durati
 func newModule(t *testing.T) (evaluate.Module, *flocitest.Faults, *recorder, func() int) {
 	t.Helper()
 	cfg, faults := flocitest.Config(t)
-	table := flocitest.Table(t, cfg)
+	tables := flocitest.CreateTables(t, cfg)
 	rec := &recorder{}
-	rows := func() int { return flocitest.Rows(t, cfg, table) }
-	return evaluate.New(rules.NewPolicy(), ddb.New(cfg, table), rec), faults, rec, rows
+	rows := func() int { return flocitest.Rows(t, cfg, tables.All()...) }
+	return evaluate.New(rules.NewPolicy(), ddb.New(cfg, ddb.Tables(tables)), rec), faults, rec, rows
 }
 
 func TestEvaluateRecordsTheDecisionBeforeReturningIt(t *testing.T) {

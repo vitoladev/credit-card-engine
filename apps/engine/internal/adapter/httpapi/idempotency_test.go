@@ -47,8 +47,8 @@ func TestSingleEvaluationWithTheSameKeyIsRecordedOnce(t *testing.T) {
 	if !replayed(again) {
 		t.Fatalf("headers=%v", again.Headers)
 	}
-	// One DECISION# row and one IDEMPOTENCY# row.
-	if n := flocitest.Rows(t, h.cfg, h.table); n != 2 {
+	// One decision and one idempotency key.
+	if n := flocitest.Rows(t, h.cfg, h.tables.All()...); n != 2 {
 		t.Fatalf("rows=%d", n)
 	}
 }
@@ -63,11 +63,10 @@ func TestBatchWithTheSameKeyIsSubmittedOnce(t *testing.T) {
 	if !replayed(again) {
 		t.Fatalf("headers=%v", again.Headers)
 	}
-	// Three ITEM# rows and one IDEMPOTENCY# row.
-	if n := flocitest.Rows(t, h.cfg, h.table); n != 4 {
+	// Three batch items and one idempotency key.
+	if n := flocitest.Rows(t, h.cfg, h.tables.All()...); n != 4 {
 		t.Fatalf("rows=%d", n)
 	}
-	// The key row reaches the stream too; the relay queues only the 3 items.
 	if got := h.attempts(); len(got) != 3 {
 		t.Fatalf("attempts=%+v", got)
 	}
@@ -113,7 +112,7 @@ func TestInvalidOrUnstoredKeys(t *testing.T) {
 	// The claim itself fails: nothing is evaluated or recorded.
 	h.faults.FailCalls("PutItem", 1)
 	h.want(h.post("/evaluations", body, uuid.New().String()), http.StatusServiceUnavailable, `{"error":"store_failed"}`)
-	if n := flocitest.Rows(t, h.cfg, h.table); n != 0 {
+	if n := flocitest.Rows(t, h.cfg, h.tables.All()...); n != 0 {
 		t.Fatalf("rows=%d", n)
 	}
 }

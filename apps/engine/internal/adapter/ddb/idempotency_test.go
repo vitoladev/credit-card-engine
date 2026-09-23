@@ -6,8 +6,6 @@ import (
 	"time"
 	"uuid"
 
-	"github.com/aws/aws-lambda-go/events"
-
 	"engine/internal/adapter/ddb"
 	"engine/internal/idempotency"
 )
@@ -116,18 +114,5 @@ func TestRacingClaimsHaveOneWinner(t *testing.T) {
 	wg.Wait()
 	if wins != 1 {
 		t.Fatalf("wins=%d", wins)
-	}
-}
-
-func TestTheRelaySkipsKeyRows(t *testing.T) {
-	rec := events.DynamoDBEventRecord{
-		EventName: string(events.DynamoDBOperationTypeInsert),
-		Change: events.DynamoDBStreamRecord{NewImage: map[string]events.DynamoDBAttributeValue{
-			"pk": events.NewStringAttribute("IDEMPOTENCY#key"),
-			"sk": events.NewStringAttribute("KEY"),
-		}},
-	}
-	if _, ok, err := ddb.ItemEventFrom(rec); ok || err != nil {
-		t.Fatalf("ok=%v err=%v", ok, err)
 	}
 }

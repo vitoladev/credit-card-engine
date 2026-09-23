@@ -67,7 +67,7 @@ type harness struct {
 	b      batch.Module
 	cfg    aws.Config
 	faults *flocitest.Faults
-	table  string
+	tables flocitest.Tables
 	queue  string
 	stream *flocitest.Stream
 	emit   *recorder
@@ -80,10 +80,10 @@ func newHarness(t *testing.T) *harness {
 func newHarnessWithBatchSize(t *testing.T, size int) *harness {
 	t.Helper()
 	cfg, faults := flocitest.Config(t)
-	h := &harness{t: t, cfg: cfg, faults: faults, table: flocitest.Table(t, cfg), queue: flocitest.Queue(t, cfg), emit: &recorder{}}
-	h.stream = flocitest.TableStream(t, cfg, h.table)
+	h := &harness{t: t, cfg: cfg, faults: faults, tables: flocitest.CreateTables(t, cfg), queue: flocitest.Queue(t, cfg), emit: &recorder{}}
+	h.stream = flocitest.TableStream(t, cfg, h.tables.Items)
 	h.b = batch.New(batch.Deps{
-		Items:        ddb.New(cfg, h.table),
+		Items:        ddb.New(cfg, ddb.Tables(h.tables)),
 		Publisher:    sqspub.New(cfg, h.queue),
 		Policy:       rules.NewPolicy(),
 		Emitter:      h.emit,
@@ -316,7 +316,7 @@ func TestSubmitOverTheLimitStoresAndPublishesNothing(t *testing.T) {
 	if _, err := h.b.Submit(t.Context(), threeCustomers); !errors.Is(err, batch.ErrTooLarge) {
 		t.Fatalf("err=%v", err)
 	}
-	if n := flocitest.Rows(t, h.cfg, h.table); n != 0 || len(h.take()) != 0 {
+	if n := flocitest.Rows(t, h.cfg, h.tables.All()...); n != 0 || len(h.take()) != 0 {
 		t.Fatalf("rows=%d", n)
 	}
 	if acc := h.submit(threeCustomers[:2]); acc.Queued != 2 {
@@ -330,7 +330,7 @@ func TestSubmitStoreFailurePublishesNothing(t *testing.T) {
 	if _, err := h.b.Submit(t.Context(), threeCustomers); !errors.Is(err, batch.ErrNotRecorded) {
 		t.Fatalf("err=%v", err)
 	}
-	if n := flocitest.Rows(t, h.cfg, h.table); n != 0 || len(h.take()) != 0 {
+	if n := flocitest.Rows(t, h.cfg, h.tables.All()...); n != 0 || len(h.take()) != 0 {
 		t.Fatalf("stored or published a batch that was not recorded: rows=%d", n)
 	}
 }

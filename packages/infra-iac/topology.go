@@ -14,14 +14,16 @@ const (
 	dlqFunctionID    = "DlqConsumer"
 	relayFunctionID  = "Relay"
 	apiID            = "Api"
-	tableID          = "Decisions"
+	decisionsTableID = "Decisions"
+	itemsTableID     = "BatchItems"
+	keysTableID      = "IdempotencyKeys"
 	alarmID          = "EvaluateAlarms"
 
-	// Generic keys: one table holds DECISION#, BATCH# item, and IDEMPOTENCY# rows.
-	// Its stream (NEW_IMAGE) feeds the relay, the outbox of ADR 0004.
-	tablePartitionKey = "pk"
-	tableSortKey      = "sk"
-	tableTTLAttribute = "expires_at"
+	// statusIndexName is the BatchItems index that lists items by status. The
+	// engine's adapter queries it as ddb.StatusIndex.
+	statusIndexName = "by-status"
+	// keysTTLAttribute expires an idempotency key 24 hours after its claim.
+	keysTTLAttribute = "expires_at"
 
 	// Loadtest: 100 req/s by default on Floci; the 1000 req/s NFR run is
 	// LOADTEST_RATE=1000 make loadtest against a real AWS stack.

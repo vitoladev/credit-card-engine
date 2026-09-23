@@ -34,26 +34,17 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		panic(err)
 	}
 
-	table := awsdynamodb.NewTable(stack, jsii.String(tableID), &awsdynamodb.TableProps{
-		PartitionKey: &awsdynamodb.Attribute{
-			Name: jsii.String(tablePartitionKey),
-			Type: awsdynamodb.AttributeType_STRING,
-		},
-		SortKey: &awsdynamodb.Attribute{
-			Name: jsii.String(tableSortKey),
-			Type: awsdynamodb.AttributeType_STRING,
-		},
-		BillingMode: awsdynamodb.BillingMode_PAY_PER_REQUEST,
-		Encryption:  awsdynamodb.TableEncryption_AWS_MANAGED,
-		Stream:      awsdynamodb.StreamViewType_NEW_IMAGE,
-		// Idempotency keys (ADR 0005) expire on their own after 24 hours.
-		TimeToLiveAttribute: jsii.String(tableTTLAttribute),
-		// Continuous backups: restore the table to any second of the last 35
-		// days after a bad write or an operator error.
-		PointInTimeRecoverySpecification: &awsdynamodb.PointInTimeRecoverySpecification{
-			PointInTimeRecoveryEnabled: jsii.Bool(true),
-		},
-		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
+	// One table per port (ADR 0006). Only the batch items stream: the relay is
+	// their outbox (ADR 0004). Only the idempotency keys expire (ADR 0005).
+	decisions := newTable(stack, tableSpec{id: decisionsTableID, partition: "decision_id", pitr: true})
+	items := newTable(stack, tableSpec{id: itemsTableID, partition: "batch_id", sort: "item_id", stream: true, pitr: true})
+	keys := newTable(stack, tableSpec{id: keysTableID, partition: "idempotency_key", ttl: keysTTLAttribute})
+	// A list by status reads only the items in that status (ADR 0007).
+	items.AddGlobalSecondaryIndex(&awsdynamodb.GlobalSecondaryIndexProps{
+		IndexName:      jsii.String(statusIndexName),
+		PartitionKey:   &awsdynamodb.Attribute{Name: jsii.String("batch_status"), Type: awsdynamodb.AttributeType_STRING},
+		SortKey:        &awsdynamodb.Attribute{Name: jsii.String("item_id"), Type: awsdynamodb.AttributeType_STRING},
+		ProjectionType: awsdynamodb.ProjectionType_ALL,
 	})
 
 	// Both queues declare SSE-SQS at rest and deny any request not over TLS.
@@ -75,10 +66,14 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 
 	// The HTTP Lambda only writes items: it has no access to the queue.
 	fn := goLambda(stack, functionID, "EvaluateLogs", "http", map[string]*string{
-		"DECISIONS_TABLE": table.TableName(),
-		"BATCH_SIZE":      jsii.String(size),
+		"DECISIONS_TABLE":        decisions.TableName(),
+		"BATCH_ITEMS_TABLE":      items.TableName(),
+		"IDEMPOTENCY_KEYS_TABLE": keys.TableName(),
+		"BATCH_SIZE":             jsii.String(size),
 	}, flociEvaluateConcurrency)
-	table.GrantReadWriteData(fn)
+	decisions.GrantReadWriteData(fn)
+	items.GrantReadWriteData(fn)
+	keys.GrantReadWriteData(fn)
 
 	// The relay turns the table's stream into queue messages (ADR 0004). The
 	// event source grants the stream read; the relay reads no rows.
@@ -86,7 +81,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		"QUEUE_URL": queue.QueueUrl(),
 	}, flociRelayConcurrency)
 	queue.GrantSendMessages(relay)
-	relay.AddEventSource(awslambdaeventsources.NewDynamoEventSource(table, &awslambdaeventsources.DynamoEventSourceProps{
+	relay.AddEventSource(awslambdaeventsources.NewDynamoEventSource(items, &awslambdaeventsources.DynamoEventSourceProps{
 		StartingPosition:        awslambda.StartingPosition_TRIM_HORIZON,
 		BatchSize:               jsii.Number(streamBatchSize),
 		MaxBatchingWindow:       awscdk.Duration_Seconds(jsii.Number(relayBatchingWindow)),
@@ -94,9 +89,9 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		ReportBatchItemFailures: jsii.Bool(true),
 	}))
 	worker := goLambda(stack, workerFunctionID, "WorkerLogs", "worker", map[string]*string{
-		"DECISIONS_TABLE": table.TableName(),
+		"BATCH_ITEMS_TABLE": items.TableName(),
 	}, flociWorkerConcurrency)
-	table.GrantReadWriteData(worker)
+	items.GrantReadWriteData(worker)
 	queue.GrantConsumeMessages(worker)
 	worker.AddEventSource(awslambdaeventsources.NewSqsEventSource(queue, &awslambdaeventsources.SqsEventSourceProps{
 		BatchSize:               jsii.Number(workerBatch()),
@@ -105,9 +100,9 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 	}))
 
 	dlqConsumer := goLambda(stack, dlqFunctionID, "DlqConsumerLogs", "dlq", map[string]*string{
-		"DECISIONS_TABLE": table.TableName(),
+		"BATCH_ITEMS_TABLE": items.TableName(),
 	}, flociDlqConcurrency)
-	table.GrantReadWriteData(dlqConsumer)
+	items.GrantReadWriteData(dlqConsumer)
 	// The event source grants consume on the DLQ, and nothing else on SQS.
 	dlqConsumer.AddEventSource(awslambdaeventsources.NewSqsEventSource(dlq, &awslambdaeventsources.SqsEventSourceProps{
 		BatchSize:               jsii.Number(sqsBatchSize),
@@ -158,13 +153,19 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		},
 	})
 
-	wireObservability(stack, fn, worker, dlqConsumer, relay, api, queue, dlq)
+	wireObservability(stack, fn, worker, dlqConsumer, relay, api, queue, dlq, items)
 
 	awscdk.NewCfnOutput(stack, jsii.String("ApiUrl"), &awscdk.CfnOutputProps{
 		Value: stage.Url(),
 	})
 	awscdk.NewCfnOutput(stack, jsii.String("DecisionsTable"), &awscdk.CfnOutputProps{
-		Value: table.TableName(),
+		Value: decisions.TableName(),
+	})
+	awscdk.NewCfnOutput(stack, jsii.String("BatchItemsTable"), &awscdk.CfnOutputProps{
+		Value: items.TableName(),
+	})
+	awscdk.NewCfnOutput(stack, jsii.String("IdempotencyKeysTable"), &awscdk.CfnOutputProps{
+		Value: keys.TableName(),
 	})
 	awscdk.NewCfnOutput(stack, jsii.String("EvaluationQueueUrl"), &awscdk.CfnOutputProps{
 		Value: queue.QueueUrl(),
@@ -204,6 +205,40 @@ func lambdaEnv(env map[string]*string) *map[string]*string {
 	return &env
 }
 
+// tableSpec is one engine table: its keys (all strings) and what it turns on.
+type tableSpec struct {
+	id, partition, sort string
+	stream, pitr        bool
+	ttl                 string
+}
+
+// newTable is an on-demand table with AWS managed encryption. A table with
+// pitr has continuous backups: restore it to any second of the last 35 days
+// after a bad write or an operator error.
+func newTable(stack awscdk.Stack, spec tableSpec) awsdynamodb.Table {
+	props := &awsdynamodb.TableProps{
+		PartitionKey:  &awsdynamodb.Attribute{Name: jsii.String(spec.partition), Type: awsdynamodb.AttributeType_STRING},
+		BillingMode:   awsdynamodb.BillingMode_PAY_PER_REQUEST,
+		Encryption:    awsdynamodb.TableEncryption_AWS_MANAGED,
+		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
+	}
+	if spec.sort != "" {
+		props.SortKey = &awsdynamodb.Attribute{Name: jsii.String(spec.sort), Type: awsdynamodb.AttributeType_STRING}
+	}
+	if spec.stream {
+		props.Stream = awsdynamodb.StreamViewType_NEW_IMAGE
+	}
+	if spec.pitr {
+		props.PointInTimeRecoverySpecification = &awsdynamodb.PointInTimeRecoverySpecification{
+			PointInTimeRecoveryEnabled: jsii.Bool(true),
+		}
+	}
+	if spec.ttl != "" {
+		props.TimeToLiveAttribute = jsii.String(spec.ttl)
+	}
+	return awsdynamodb.NewTable(stack, jsii.String(spec.id), props)
+}
+
 // goLambda is one engine binary from apps/engine/cmd/<cmd>: arm64, traced,
 // with its own two-week log group.
 func goLambda(stack awscdk.Stack, id, logsID, cmd string, env map[string]*string, flociConcurrency float64) awscdklambdagoalpha.GoFunction {
@@ -221,7 +256,10 @@ func goLambda(stack awscdk.Stack, id, logsID, cmd string, env map[string]*string
 		LogGroup:     logs,
 		Environment:  lambdaEnv(env),
 		Bundling: &awscdklambdagoalpha.BundlingOptions{
-			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`),
+			// -buildvcs=false: the binary needs no VCS stamp, and the git
+			// status the stamp runs fails intermittently when the four
+			// bundles build at once.
+			GoBuildFlags: jsii.Strings(`-ldflags "-s -w"`, "-buildvcs=false"),
 		},
 		ReservedConcurrentExecutions: flociReservedConcurrency(flociConcurrency),
 	})

@@ -26,14 +26,14 @@ type store struct {
 	*ddb.Store
 	faults *flocitest.Faults
 	cfg    aws.Config
-	table  string
+	tables flocitest.Tables
 }
 
 func newStore(t *testing.T) store {
 	t.Helper()
 	cfg, faults := flocitest.Config(t)
-	table := flocitest.Table(t, cfg)
-	return store{Store: ddb.New(cfg, table), faults: faults, cfg: cfg, table: table}
+	tables := flocitest.CreateTables(t, cfg)
+	return store{Store: ddb.New(cfg, ddb.Tables(tables)), faults: faults, cfg: cfg, tables: tables}
 }
 
 // newItems gives each customer a version 7 item ID, as batch.Submit does.
@@ -453,7 +453,7 @@ func TestCreateRollsBackAfterTheRequestDeadline(t *testing.T) {
 	if err := st.Create(ctx, "b1", items); err == nil {
 		t.Fatal("expected write failure")
 	}
-	if n := flocitest.Rows(t, st.cfg, st.table); n != 0 {
+	if n := flocitest.Rows(t, st.cfg, st.tables.All()...); n != 0 {
 		t.Fatalf("rows=%d", n)
 	}
 }
@@ -471,7 +471,7 @@ func TestCreateRemovesPartialRowsOnWriteFailure(t *testing.T) {
 	if _, err := st.Page(t.Context(), "b1", batch.PageQuery{Limit: 10}); !errors.Is(err, batch.ErrNotFound) {
 		t.Fatalf("leftover batch: err=%v", err)
 	}
-	if n := flocitest.Rows(t, st.cfg, st.table); n != 0 {
+	if n := flocitest.Rows(t, st.cfg, st.tables.All()...); n != 0 {
 		t.Fatalf("rows=%d", n)
 	}
 }
@@ -490,7 +490,7 @@ func TestStreamRecordsBecomeItemEvents(t *testing.T) {
 	}
 
 	var got []batch.ItemEvent
-	for _, rec := range flocitest.TableStream(t, st.cfg, st.table).Next().Records {
+	for _, rec := range flocitest.TableStream(t, st.cfg, st.tables.Items).Next().Records {
 		e, ok, err := ddb.ItemEventFrom(rec)
 		if err != nil {
 			t.Fatal(err)
@@ -511,9 +511,45 @@ func TestStreamRecordsBecomeItemEvents(t *testing.T) {
 		t.Fatalf("remove: ok=%v err=%v", ok, err)
 	}
 	broken := events.DynamoDBEventRecord{EventName: "INSERT", Change: events.DynamoDBStreamRecord{NewImage: map[string]events.DynamoDBAttributeValue{
-		"pk": events.NewStringAttribute("BATCH#b1"), "item_id": events.NewStringAttribute(id[0]),
+		"batch_id": events.NewStringAttribute("b1"), "item_id": events.NewStringAttribute(id[0]),
 	}}}
 	if _, _, err := ddb.ItemEventFrom(broken); err == nil {
 		t.Fatal("decoded a record with no status")
+	}
+}
+
+// ADR 0007: a list by status reads the StatusIndex, so every transition must
+// move the item's batch_status with its status.
+func TestTheStatusIndexFollowsEveryTransition(t *testing.T) {
+	st := newStore(t)
+	ctx := t.Context()
+	customers := make([]domain.Customer, 4)
+	for i := range customers {
+		customers[i] = domain.Customer{Name: "Ana", CPF: "39053344705"}
+	}
+	id := create(t, st, "b1", customers)
+	approve := domain.Result{Decision: domain.Approved, Reasons: []string{"eligible"}}
+	steps := []error{
+		st.Decide(ctx, "b1", id[0], 1, approve),
+		st.Fail(ctx, "b1", id[1], 1),
+		st.Fail(ctx, "b1", id[2], 1),
+		st.Retry(ctx, "b1", id[2], 1),
+		st.Fail(ctx, "b1", id[3], 1),
+		st.Cancel(ctx, "b1", id[3]),
+	}
+	if err := errors.Join(steps...); err != nil {
+		t.Fatal(err)
+	}
+	for status, want := range map[batch.ItemStatus][]string{
+		batch.Approved:  {id[0]},
+		batch.Failed:    {id[1]},
+		batch.Queued:    {id[2]},
+		batch.Cancelled: {id[3]},
+		batch.Denied:    nil,
+	} {
+		p, err := st.Page(ctx, "b1", batch.PageQuery{Status: status, Limit: 10})
+		if err != nil || !slices.Equal(ids(p.Items), want) || p.More {
+			t.Fatalf("%s: page=%v more=%v err=%v, want %v", status, ids(p.Items), p.More, err, want)
+		}
 	}
 }
