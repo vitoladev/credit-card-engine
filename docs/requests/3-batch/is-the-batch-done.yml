@@ -18,4 +18,4 @@ runtime:
   - expression: res.status
     operator: eq
     value: '200'
-docs: The batch is done when this returns no items.
+docs: A batch has no status. This call is how a caller sees that no item is still QUEUED.

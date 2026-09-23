@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 640" role="img" aria-labelledby="t d">
+  <title id="t">The worker writes the decision on the item</title>
+  <desc id="d">The original BatchItems row is now APPROVED. A dashed APPROVED stream record is not published. The relay does not send a new SQS message.</desc>
+  <rect width="1200" height="640" fill="#f3ead8"/>
+  <rect x="50" y="70" width="500" height="400" rx="24" fill="#d8c4a0" stroke="#1b1612" stroke-width="8"/>
+  <text x="80" y="120" fill="#6f6458" font-size="24" font-family="ui-sans-serif, sans-serif">BatchItems</text>
+  <g transform="translate(140 160)">
+    <rect width="300" height="260" rx="14" fill="#fff8ee" stroke="#1b1612" stroke-width="6"/>
+    <text x="24" y="44" font-size="22" font-family="ui-sans-serif, sans-serif" fill="#6f6458">item</text>
+    <text x="24" y="88" font-size="36" font-family="Georgia, serif" fill="#1b1612">Ana</text>
+    <rect x="36" y="130" width="228" height="70" rx="10" fill="#2d6a4f" transform="rotate(4 150 165)"/>
+    <text x="150" y="176" text-anchor="middle" font-size="24" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#fff8ee">APPROVED</text>
+  </g>
+  <g transform="translate(590 160)">
+    <rect width="280" height="200" rx="12" fill="#eef2f7" stroke="#1b1612" stroke-width="5" stroke-dasharray="12 10"/>
+    <text x="20" y="40" font-size="20" font-family="ui-sans-serif, sans-serif" fill="#6f6458">stream record</text>
+    <rect x="30" y="70" width="220" height="70" rx="10" fill="#2d6a4f"/>
+    <text x="140" y="114" text-anchor="middle" font-size="22" font-weight="700" font-family="ui-sans-serif, sans-serif" fill="#fff8ee">APPROVED</text>
+  </g>
+  <g transform="translate(930 150)">
+    <circle cx="80" cy="50" r="42" fill="#c4a574" stroke="#1b1612" stroke-width="5"/>
+    <rect x="42" y="98" width="76" height="140" rx="24" fill="#3d4f66" stroke="#1b1612" stroke-width="5"/>
+    <text x="80" y="290" text-anchor="middle" font-size="24" font-family="ui-sans-serif, sans-serif" fill="#1b1612">relay</text>
+    <text x="80" y="322" text-anchor="middle" font-size="22" font-family="ui-sans-serif, sans-serif" fill="#6f6458">no publish</text>
+  </g>
+  <text x="600" y="560" text-anchor="middle" font-size="32" font-family="Georgia, serif" fill="#1b1612">Decide writes the item. The stream fires. Nothing is queued.</text>
+</svg>

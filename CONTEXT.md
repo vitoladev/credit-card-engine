@@ -59,7 +59,8 @@ belongs to a batch.
 
 **Batch**:
 A list of customers submitted together for asynchronous evaluation. It is
-accepted whole or rejected whole.
+accepted whole or rejected whole. It has no status. Each batch item has a
+status.
 
 **Report**:
 The list of a batch's items, read page by page: each item with its status and

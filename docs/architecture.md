@@ -28,70 +28,92 @@ file, `apps/engine/architecture_test.go`, and the stack describe the cut.
 
 ## Runtime
 
+The engine has two HTTP paths. `POST /evaluations` evaluates one customer in
+the request and stores the decision before it answers. `POST /evaluations/batch`
+stores one `BatchItems` row per customer and answers `202`. The stream, the
+relay, SQS, and the worker decide those items afterwards.
+
+### How a batch moves
+
+A batch is a list of customers submitted together. It is accepted whole or
+rejected whole. There is no batch row. The items are the batch. Each row's
+partition key is `batch_id`, its sort key is `item_id`. Progress is the status
+of those rows. The batch itself has no status.
+
+![Three BatchItems rows in a batch_id partition. The partition has no status field.](pictures/batch-has-no-stamp.svg)
+
+Each item's status is `QUEUED`, `APPROVED`, `DENIED`, `FAILED`, or `CANCELLED`.
+`GET /batches/{id}/items` pages the partition. `?status=` queries the
+`by-status` GSI, whose key is `batch_status` = `<batch_id>#<status>`. A decided
+item carries its decision as its status. Only a `FAILED` item can be retried or
+cancelled.
+
+![Four items stamped QUEUED, QUEUED, APPROVED, and FAILED.](pictures/item-has-a-status.svg)
+
+`POST /evaluations/batch` does not publish to SQS. `batch.Submit` writes the
+items as `QUEUED` (`BatchWriteItem`) and returns. The write is the event. Only
+`BatchItems` has a DynamoDB stream (`NEW_IMAGE`, 24 h). A `PutItem` on
+`Decisions` or `IdempotencyKeys` does not enter this path.
+
+![A QUEUED BatchItems row, the stream (NEW_IMAGE, 24 h), and a dashed stream record with the same status.](pictures/stream-copies-the-change.svg)
+
+The event source mapping delivers every item change to the Relay Lambda
+(`cmd/relay`, `ddb.Relay`). `batch.Relay` publishes to `EvaluationJobs` only
+when the new image's status is `QUEUED`: submit, retry, and retry-failed.
+`APPROVED`, `DENIED`, `FAILED`, `CANCELLED`, `REMOVE`, and a record it cannot
+read are acknowledged and produce no message
+([ADR 0004](adr/0004-relay-queued-items-from-the-table-stream.md)). The SQS
+message has no customer data. It names `{batch_id, item_id, attempt}`. The
+worker loads the item.
+
+![The relay publishes a QUEUED stream record to SQS EvaluationJobs. An APPROVED record is acknowledged and not published.](pictures/relay-carries-queued-only.svg)
+
+The worker (`cmd/worker`, `batch.Process`) reads the item with a consistent
+`GetItem` and evaluates it. `Items.Decide` moves `QUEUED` to `APPROVED` or
+`DENIED` on the same attempt and stores the result. That `UpdateItem` is
+streamed too. The relay sees a non-`QUEUED` image and publishes nothing, so a
+decision does not enqueue the item again.
+
+![The item is now APPROVED. The APPROVED stream record reaches the relay, which does not publish.](pictures/worker-stamps-the-original.svg)
+
+If the worker cannot finish, SQS redelivers. After 5 receives the message
+lands on `EvaluationJobsDLQ`. The DlqConsumer (`cmd/dlq`, `batch.DeadLetter`)
+moves `QUEUED` to `FAILED` on that attempt. A failed item has no decision. An
+operator retries it (`FAILED` to `QUEUED`, `attempts+1`, at most 5) or cancels
+it. `GET /batches/{id}/items?status=FAILED` lists them. Retry writes `QUEUED`
+again, so the stream and the relay enqueue the new attempt. The batch still
+has no status.
+
+![A batch_id partition with APPROVED, FAILED, and DENIED items. An operator retries or cancels the FAILED item. The partition has no status.](pictures/failed-waits-for-a-person.svg)
+
 ```mermaid
 flowchart LR
-  subgraph clients [Ingress]
-    sync["POST /evaluations"]
-    batch["POST /evaluations/batch"]
-    getOne["GET /evaluations/:id"]
-    getReport["GET /batches/:id/items"]
-    recover["POST /batches/:id/items/:item_id/retry | cancel\nPOST /batches/:id/retry-failed"]
-  end
-
-  subgraph edge [AWS CDK]
-    api["HTTP API v2\n1200 rps / 2400 burst"]
-    fn["Lambda HTTP\narm64 / 3s"]
-    stream[["BatchItems stream\nNEW_IMAGE, 24h"]]
-    relay["Lambda Relay\nbatch 100 or 1 s, bisect, partial failures"]
-    q["SQS EvaluationJobs"]
-    worker["Lambda Worker\nSQS batch 50 or 1 s (10 on Floci), partial failures"]
-    dlq["SQS EvaluationJobsDLQ\n14d, after 5 receives"]
-    dlqFn["Lambda DlqConsumer\nSQS batch 10, partial failures"]
-    ddb[("DynamoDB\nDecisions, BatchItems, IdempotencyKeys")]
-    logs["CloudWatch Logs\n14d"]
-    alarms["Alarms\nerrors, DLQ, relay lag, backlog, p99, log filters"]
-    dash["Dashboard CreditCardEngine"]
-  end
-
-  subgraph core [apps/engine]
-    ev["evaluate"]
-    chain["rules.NewPolicy()"]
-    domain["domain.Result"]
-  end
-
-  sync --> api --> fn --> ev
-  fn -->|"PutItem IdempotencyKeys if absent (Idempotency-Key)"| ddb
-  fn -->|"PutItem Decisions"| ddb
-  batch --> api --> fn -->|"BatchWriteItem BatchItems"| ddb
-  ddb --> stream --> relay -->|"SendMessageBatch, QUEUED only"| q --> worker --> ev
-  worker -->|"GetItem"| ddb
-  worker -->|"UpdateItem QUEUED → APPROVED | DENIED"| ddb
-  q -->|"maxReceiveCount 5"| dlq --> dlqFn
-  dlqFn -->|"UpdateItem QUEUED → FAILED"| ddb
-  recover --> api --> fn -->|"UpdateItem FAILED → QUEUED / CANCELLED"| ddb
-  getOne --> api
-  getReport --> api
-  ev --> chain --> domain
-  fn --> logs
-  fn --> alarms
-  fn --> dash
+  post["POST /evaluations"] --> http["Lambda HTTP"]
+  http --> ev["evaluate"]
+  http --> keys[(IdempotencyKeys)]
+  http --> decisions[(Decisions)]
+  get["GET /evaluations/:id"] --> http
 ```
 
-The engine has two paths, on purpose:
-
-- **Sync** (`POST /evaluations`). The handler evaluates one customer under a
-  1 s SLO and returns the decision in the response. The decision is stored
-  under a new `decision_id` and read back with `GET /evaluations/{id}`.
-- **Batch** (`POST /evaluations/batch`). The handler stores the batch items
-  and answers `202`. The `BatchItems` stream, the relay, SQS, and the worker decide
-  each item afterwards, and `GET /batches/{id}/items` lists them.
+```mermaid
+flowchart LR
+  post["POST /evaluations/batch"] --> http["Lambda HTTP"] --> items[(BatchItems)]
+  recover["retry or cancel"] --> http
+  list["GET /batches/:id/items"] --> http
+  items --> stream[stream] --> relay[relay]
+  relay -->|"QUEUED"| q[SQS] --> worker[worker]
+  worker -->|"APPROVED or DENIED"| items
+  q -->|"after 5 receives"| dlq[DLQ] --> fail[DlqConsumer]
+  fail -->|"FAILED"| items
+```
 
 The sync path fails closed
-([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)). The
-handler writes the decision to DynamoDB before it returns it. If the write fails,
-`POST /evaluations` returns `503 {"error":"decision_not_recorded"}` and no
-decision, because a decision that was never recorded cannot be audited. On
-the batch path the handler has already answered `202`, so a failure turns
+([ADR 0001](adr/0001-fail-closed-and-operator-driven-item-recovery.md)).
+`POST /evaluations` is under a 1 s SLO. The handler writes the decision to
+`Decisions` before it returns it. `GET /evaluations/{id}` reads that row. If the
+write fails, `POST /evaluations` returns `503 {"error":"decision_not_recorded"}`
+and no decision, because a decision that was never recorded cannot be audited.
+On the batch path the handler has already answered `202`, so a failure turns
 into a redelivery and, after 5 receives, a failed item (see
 [Resilience](#resilience)).
 
@@ -127,12 +149,41 @@ Then `batch.Submit`:
 If storing the batch fails, the handler returns
 `503 {"error":"batch_not_recorded"}`.
 
-The `BatchItems` stream carries each new item to the `Relay` Lambda
-([ADR 0004](adr/0004-relay-queued-items-from-the-table-stream.md)). Its event
-source mapping invokes the relay when 100 records are ready or 1 s after the
-first one, whichever comes first, so a quiet stream still flows within a
-second. A stream has no visibility timeout: the mapping keeps a checkpoint per
-shard. The relay reads each record into an item event,
+### BatchItems stream
+
+[How a batch moves](#how-a-batch-moves) is this loop with figures.
+
+Only `BatchItems` has a DynamoDB stream. The view is `NEW_IMAGE`. The stream
+retains records for 24 hours. Submit, retry, and retry-failed write the item.
+The stream delivers every item change to the `Relay` Lambda. The relay
+publishes the records whose status is `QUEUED`
+([ADR 0004](adr/0004-relay-queued-items-from-the-table-stream.md)).
+
+Who writes the item:
+
+```mermaid
+flowchart LR
+  submit["submit"] --> items[(BatchItems)]
+  retry["retry"] --> items
+  worker["worker"] --> items
+  dlq["DlqConsumer"] --> items
+  cancel["cancel"] --> items
+```
+
+What the stream does with that write:
+
+```mermaid
+flowchart LR
+  items[(BatchItems)] --> stream[stream] --> relay[relay]
+  relay -->|"QUEUED"| q[SQS] --> worker[worker]
+  relay -->|"anything else"| skip[no message]
+  worker --> items
+```
+
+The event source mapping invokes the relay when 100 records are ready or 1 s
+after the first one, whichever comes first, so a quiet stream still flows
+within a second. A stream has no visibility timeout: the mapping keeps a
+checkpoint per shard. The relay reads each record into an item event,
 `{event_id, batch_id, item_id, attempt, status}`, where `event_id` is
 `<batch_id>:<item_id>:<attempt>:<status>`.
 `batch.Relay` publishes the events whose status is `QUEUED` with
@@ -196,8 +247,13 @@ A failed item keeps its attempts, so the list shows how many passes it took.
 
 `GET /batches/{id}/items` returns one page of items in submission order
 ([ADR 0003](adr/0003-list-batch-items-by-page.md)). A batch has no status and
-no totals: each item carries its own status and revolving amount. A caller
-knows the batch is done when `?limit=1&status=QUEUED` returns no items.
+no totals. Each item carries its own status (`QUEUED`, `APPROVED`, `DENIED`,
+`FAILED`, or `CANCELLED`) and revolving amount.
+
+`?status=QUEUED` lists items the worker has not decided yet.
+`?limit=1&status=QUEUED` with no items means every item has left `QUEUED`.
+`?status=FAILED` lists items an operator retries or cancels. `FAILED` is an
+item status, not a status of the batch.
 
 `batch.ListItems` asks `Items.Page` for at most `limit` items (100 by default,
 1000 at most) after the cursor's item. Without `?status=`, `Page` runs a
@@ -326,7 +382,9 @@ managed encryption, and every key attribute is a string.
 `BatchItems` has one global secondary index, `by-status`: partition key
 `batch_status`, sort key `item_id`, every attribute projected
 ([ADR 0007](adr/0007-list-items-by-status-from-an-index.md)). Every write that
-sets `status` sets `batch_status` in the same request.
+sets `status` sets `batch_status` in the same request. `batch_status` is
+`<batch_id>#<status>`, the index key for that item. It is not a status of the
+batch.
 
 A batch is its items in `BatchItems`. There is no batch row: an unknown batch
 is a `batch_id` with no items. `item_id` is a version 7 UUID, so a Query on
@@ -502,7 +560,7 @@ Wire types are `events.APIGatewayV2HTTPRequest` and `HTTPResponse`.
 | `POST` | `/evaluations` | one `Customer` | `200` + `{decision_id, ...Result}` (sync, 1 s SLO); `400` malformed JSON; `422` invalid customer; `503 {"error":"decision_not_recorded"}` when the decision cannot be stored. Takes `Idempotency-Key` (see below) |
 | `GET` | `/evaluations/{id}` | — | `200` + the same `{decision_id, ...Result}`; `404 {"error":"not_found"}` |
 | `POST` | `/evaluations/batch` | `{customers:[...]}` or array, at most `BATCH_SIZE` (default 100, max 1000) | `202` + `{batch_id, queued, item_ids}`, `item_ids` in the order of the customers; `422` with indexed violations or `batch_too_large`, nothing stored; `503 {"error":"batch_not_recorded"}`. Takes `Idempotency-Key` |
-| `GET` | `/batches/{id}/items?status=&limit=&cursor=` | — | `200` + one page of items; `400 {"error":"invalid_status"}`, `{"error":"invalid_limit","max":1000}`, or `{"error":"invalid_cursor"}`; `404 {"error":"not_found"}` |
+| `GET` | `/batches/{id}/items?status=&limit=&cursor=` | — | `200` + one page of items. `?status=` filters by item status (`QUEUED`, `APPROVED`, `DENIED`, `FAILED`, or `CANCELLED`). A batch has no status. `400 {"error":"invalid_status"}`, `{"error":"invalid_limit","max":1000}`, or `{"error":"invalid_cursor"}`; `404 {"error":"not_found"}` |
 | `POST` | `/batches/{id}/items/{item_id}/retry` | — | `202 {"attempts","item_id"}`; `409 {"error":"invalid_transition"}` if not `FAILED`; `409 {"error":"max_attempts_reached"}` at 5 attempts; `404` |
 | `POST` | `/batches/{id}/items/{item_id}/cancel` | — | `200 {"item_id","status":"CANCELLED"}`, again `200` on a cancelled item; `409 {"error":"invalid_transition"}` otherwise; `404` |
 | `POST` | `/batches/{id}/retry-failed` | — | `202 {"requeued": n}`; `404` |

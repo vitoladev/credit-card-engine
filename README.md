@@ -4,6 +4,7 @@ A revolving-credit rules engine in Go. CDK in Go describes the HTTP API,
 Lambda, SQS, and DynamoDB.
 
 The cut, the rules, and the API are in [Architecture](docs/architecture.md).
+[How a batch moves](docs/architecture.md#how-a-batch-moves) is the batch path.
 You do not need an AWS account: everything runs on Floci, a local AWS
 emulator, inside a Dev Container.
 
@@ -121,10 +122,13 @@ curl -s --aws-sigv4 "aws:amz:us-east-1:execute-api" --user "$AWS_ACCESS_KEY_ID:$
 
 Each item has its `item_id`, a masked CPF, its `status` (`QUEUED`,
 `APPROVED`, `DENIED`, `FAILED`, or `CANCELLED`), `reasons`,
-`revolving_amount_cents`, and `attempts`, in submission order. To read the
+`revolving_amount_cents`, and `attempts`, in submission order. A batch has
+no status. `FAILED` is an item the DLQ consumer marked. When
+`?status=QUEUED` returns items, the worker has not decided them yet. When
+`?limit=1&status=QUEUED` returns no items, every item has left `QUEUED`.
+`?status=FAILED` lists items an operator retries or cancels. To read the
 next page, pass `next_cursor` as `?cursor=`. The last page has no
-`next_cursor`. To list one status only, add `?status=FAILED`. The batch is
-done when `?limit=1&status=QUEUED` returns no items.
+`next_cursor`.
 
 With more than one query parameter, write them in alphabetical order
 (`cursor`, `limit`, `status`). The curl in the Dev Container (7.88) signs the
@@ -235,6 +239,6 @@ Floci differs from AWS in ways that change what a local run shows:
 apps/engine/          The evaluate, batch, and idempotency modules, the rules, and the http, relay, worker, and dlq commands
 packages/infra-iac/   CDK in Go
 packages/loadtest/    k6 load test for both evaluation routes
-docs/                 architecture.md, loadtest.md, CODING_STANDARDS.md, the ADRs in adr/, and the HTTP collection in requests/
+docs/                 architecture.md, pictures/, loadtest.md, CODING_STANDARDS.md, the ADRs in adr/, and the HTTP collection in requests/
 CONTEXT.md            The glossary: the name of each domain concept
 ```

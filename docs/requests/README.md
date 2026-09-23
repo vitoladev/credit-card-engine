@@ -38,7 +38,7 @@ The target runs the collection with the Bruno CLI against the stack from
 | `health.yml` | `GET /health`, the only route without auth |
 | `1-single-evaluation` | one approval, one request for each denial reason, and reading a decision back |
 | `2-idempotency-key` | a new key, its replay, a key reused with another body (`422`), and an invalid key (`400`) |
-| `3-batch` | submit, submit with a key, list, pages with a cursor, lists by status, the "done" check, `400`, and `404` |
+| `3-batch` | submit, submit with a key, list, pages with a cursor, lists by item status, the empty-`QUEUED` check, `400`, and `404` |
 | `4-recovery` | retry and cancel an item, and retry every failed item |
 | `5-errors` | an invalid customer (`422`), malformed JSON (`400`), an unknown decision (`404`), and a batch with an invalid customer (`422`) |
 
