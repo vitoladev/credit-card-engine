@@ -6,6 +6,8 @@ status: accepted
 
 > Partly superseded by [ADR 0003](0003-list-batch-items-by-page.md): items
 > are keyed by `item_id`, not by index, and a batch has no status.
+> Partly superseded by [ADR 0004](0004-relay-queued-items-from-the-table-stream.md):
+> a failed publish no longer fails the item; the stream delivers it again.
 
 A credit decision that is not recorded cannot be audited, so a single
 evaluation returns `503` when the decision cannot be persisted, even though the

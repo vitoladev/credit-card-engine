@@ -177,11 +177,11 @@ network, so the deployed Lambdas reach Floci at `http://floci:4566`, not
 | `make api-url` | Prints the HTTP API base URL on the emulator. |
 | `make synth` | `cdk synth` (template, no deploy). |
 | `make floci-up` and `make floci-down` | Only the `floci` service from `.devcontainer/docker-compose.yml`. No-op inside the Dev Container. |
-| `make floci-reap` | Removes this stack's Floci Lambda containers (Evaluate, Worker, DlqConsumer). The Floci sidecar stays up. |
+| `make floci-reap` | Removes this stack's Floci Lambda containers (Evaluate, Relay, Worker, DlqConsumer). The Floci sidecar stays up. |
 
 `make loadtest` runs at `LOADTEST_RATE` req/s (default 100) for 10 s. On
-Floci, k6 stays at 8 VUs and the Lambdas stay at reserved concurrency 8, 4,
-and 2. Local thresholds are p95 under 2 s and under 1% errors. The target reaps
+Floci, k6 stays at 8 VUs and the Lambdas stay at reserved concurrency 8 (Evaluate), 4 (Worker), and 2
+(Relay, DlqConsumer). Local thresholds are p95 under 2 s and under 1% errors. The target reaps
 Floci Lambda containers afterward, on success or fail. The 1000 req/s NFR
 run is `LOADTEST_RATE=1000 make loadtest` against a real AWS stack.
 
