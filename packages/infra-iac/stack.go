@@ -43,17 +43,28 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 			Name: jsii.String(tableSortKey),
 			Type: awsdynamodb.AttributeType_STRING,
 		},
-		BillingMode:   awsdynamodb.BillingMode_PAY_PER_REQUEST,
-		Encryption:    awsdynamodb.TableEncryption_AWS_MANAGED,
-		Stream:        awsdynamodb.StreamViewType_NEW_IMAGE,
+		BillingMode: awsdynamodb.BillingMode_PAY_PER_REQUEST,
+		Encryption:  awsdynamodb.TableEncryption_AWS_MANAGED,
+		Stream:      awsdynamodb.StreamViewType_NEW_IMAGE,
+		// Continuous backups: restore the table to any second of the last 35
+		// days after a bad write or an operator error.
+		PointInTimeRecoverySpecification: &awsdynamodb.PointInTimeRecoverySpecification{
+			PointInTimeRecoveryEnabled: jsii.Bool(true),
+		},
 		RemovalPolicy: awscdk.RemovalPolicy_DESTROY,
 	})
 
+	// Both queues declare SSE-SQS at rest and deny any request not over TLS.
 	dlq := awssqs.NewQueue(stack, jsii.String(dlqID), &awssqs.QueueProps{
 		RetentionPeriod: awscdk.Duration_Days(jsii.Number(dlqRetentionDays)),
+		Encryption:      awssqs.QueueEncryption_SQS_MANAGED,
+		EnforceSSL:      jsii.Bool(true),
 	})
 	queue := awssqs.NewQueue(stack, jsii.String(queueID), &awssqs.QueueProps{
-		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(lambdaTimeoutS * 6)),
+		Encryption: awssqs.QueueEncryption_SQS_MANAGED,
+		EnforceSSL: jsii.Bool(true),
+		// AWS: six times the function timeout, plus the batching window.
+		VisibilityTimeout: awscdk.Duration_Seconds(jsii.Number(lambdaTimeoutS*6 + workerBatchingWindow)),
 		DeadLetterQueue: &awssqs.DeadLetterQueue{
 			Queue:           dlq,
 			MaxReceiveCount: jsii.Number(maxReceiveCount),
@@ -85,7 +96,8 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 	table.GrantReadWriteData(worker)
 	queue.GrantConsumeMessages(worker)
 	worker.AddEventSource(awslambdaeventsources.NewSqsEventSource(queue, &awslambdaeventsources.SqsEventSourceProps{
-		BatchSize:               jsii.Number(sqsBatchSize),
+		BatchSize:               jsii.Number(workerBatch()),
+		MaxBatchingWindow:       awscdk.Duration_Seconds(jsii.Number(workerBatchingWindow)),
 		ReportBatchItemFailures: jsii.Bool(true),
 	}))
 
@@ -143,7 +155,7 @@ func NewStack(scope constructs.Construct, id string, props *stackProps) awscdk.S
 		},
 	})
 
-	wireObservability(stack, fn, worker, dlqConsumer, relay, api, dlq)
+	wireObservability(stack, fn, worker, dlqConsumer, relay, api, queue, dlq)
 
 	awscdk.NewCfnOutput(stack, jsii.String("ApiUrl"), &awscdk.CfnOutputProps{
 		Value: stage.Url(),
@@ -210,6 +222,16 @@ func goLambda(stack awscdk.Stack, id, logsID, cmd string, env map[string]*string
 		},
 		ReservedConcurrentExecutions: flociReservedConcurrency(flociConcurrency),
 	})
+}
+
+// workerBatch is the worker's SQS batch size. Floci's poller receives one
+// message per poll when the batch is over the 10 of one ReceiveMessage call, so
+// Floci keeps 10; AWS fills the batch across calls within the window.
+func workerBatch() float64 {
+	if os.Getenv("AWS_ENDPOINT_URL") == "" {
+		return workerBatchSize
+	}
+	return sqsBatchSize
 }
 
 // flociReservedConcurrency caps in-flight containers on Floci. Real AWS

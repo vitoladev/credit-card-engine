@@ -37,11 +37,20 @@ const (
 	maxReceiveCount  = 3
 	dlqRetentionDays = 14
 	sqsBatchSize     = 10
+	// The worker takes up to 50 messages per invocation and handles them
+	// concurrently. SQS allows a batch over 10 only with a batching window,
+	// which adds up to 1 s when traffic is low.
+	workerBatchSize      = 50
+	workerBatchingWindow = 1
 	// The relay reads the table stream in batches of this size. A record
 	// that keeps failing is retried until it expires (24 h); the IteratorAge
 	// alarm fires long before that.
 	streamBatchSize    = 100
 	iteratorAgeAlarmMs = 60_000
+	// The batch SLO the ItemEndToEnd alarm guards, and the queue backlog that
+	// breaks it first.
+	itemEndToEndAlarmMs = 5_000
+	queueAgeAlarmS      = 60
 
 	lambdaTimeoutS = 3
 	lambdaMemoryMB = 256

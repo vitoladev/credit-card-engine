@@ -9,7 +9,7 @@ import (
 	"github.com/aws/jsii-runtime-go"
 )
 
-func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslambda.IFunction, api awsapigatewayv2.HttpApi, dlq awssqs.IQueue) {
+func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslambda.IFunction, api awsapigatewayv2.HttpApi, queue, dlq awssqs.IQueue) {
 	minute := awscdk.Duration_Minutes(jsii.Number(1))
 	alarmOnSum(stack, "Api5xx", "API Gateway 5xx ≥ 1 in 1 minute", api.MetricServerError, api5xxAlarmThreshold)
 	alarmOnSum(stack, "WorkerErrors", "Worker Lambda errors ≥ 1 in 1 minute", worker.MetricErrors, workerErrorAlarmThreshold)
@@ -31,6 +31,25 @@ func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslam
 	}).CreateAlarm(stack, jsii.String("RelayIteratorAge"), &awscloudwatch.CreateAlarmOptions{
 		AlarmDescription:   jsii.String("Relay stream iterator age over 60 s for 3 minutes"),
 		Threshold:          jsii.Number(iteratorAgeAlarmMs),
+		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
+		EvaluationPeriods:  jsii.Number(3),
+		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
+	})
+	// A growing backlog: the worker is not keeping up with the queue.
+	queue.MetricApproximateAgeOfOldestMessage(&awscloudwatch.MetricOptions{
+		Statistic: jsii.String("Maximum"),
+		Period:    minute,
+	}).CreateAlarm(stack, jsii.String("QueueBacklog"), &awscloudwatch.CreateAlarmOptions{
+		AlarmDescription:   jsii.String("Oldest EvaluationJobs message over 60 s for 3 minutes"),
+		Threshold:          jsii.Number(queueAgeAlarmS),
+		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
+		EvaluationPeriods:  jsii.Number(3),
+		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
+	})
+	// The batch SLO: queued to decided, submit or retry included.
+	engineMetric("ItemEndToEndMs", "p99").CreateAlarm(stack, jsii.String("ItemEndToEnd"), &awscloudwatch.CreateAlarmOptions{
+		AlarmDescription:   jsii.String("Batch item p99 from queued to decided over 5 s for 3 minutes"),
+		Threshold:          jsii.Number(itemEndToEndAlarmMs),
 		ComparisonOperator: awscloudwatch.ComparisonOperator_GREATER_THAN_THRESHOLD,
 		EvaluationPeriods:  jsii.Number(3),
 		TreatMissingData:   awscloudwatch.TreatMissingData_NOT_BREACHING,
@@ -81,6 +100,10 @@ func wireObservability(stack awscdk.Stack, fn, worker, dlqConsumer, relay awslam
 	dash.AddWidgets(
 		graph("DenyByReason", denyByReason),
 		graph("DecisionLatencyMs p99", engineMetric("DecisionLatencyMs", "p99")),
+	)
+	dash.AddWidgets(
+		graph("Batch item end to end p99 (queued to decided)", engineMetric("ItemEndToEndMs", "p99")),
+		graph("Oldest queued message (s)", queue.MetricApproximateAgeOfOldestMessage(&awscloudwatch.MetricOptions{Statistic: jsii.String("Maximum"), Period: minute})),
 	)
 	dash.AddWidgets(
 		graph("HTTP Lambda p99 duration", fn.MetricDuration(&awscloudwatch.MetricOptions{Statistic: jsii.String("p99"), Period: minute})),

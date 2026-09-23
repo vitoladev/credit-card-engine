@@ -23,7 +23,7 @@ func TestStackHasTheDayZeroSurface(t *testing.T) {
 	template.ResourceCountIs(jsii.String("AWS::ApiGatewayV2::Stage"), jsii.Number(1))
 	template.ResourceCountIs(jsii.String("AWS::Lambda::Function"), jsii.Number(4))
 	template.ResourceCountIs(jsii.String("AWS::SQS::Queue"), jsii.Number(2))
-	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Alarm"), jsii.Number(6))
+	template.ResourceCountIs(jsii.String("AWS::CloudWatch::Alarm"), jsii.Number(8))
 
 	template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), map[string]any{
 		"BillingMode": "PAY_PER_REQUEST",
@@ -103,6 +103,40 @@ func TestRelayIsTheOutboxOfTheTableStream(t *testing.T) {
 	}
 }
 
+// Data at rest and in transit, backups, and the batch SLO alarms.
+func TestStackProtectsDataAndWatchesTheBatchSLO(t *testing.T) {
+	t.Cleanup(jsii.Close)
+	app := awscdk.NewApp(nil)
+	template := assertions.Template_FromStack(NewStack(app, "Test", nil), nil)
+
+	template.HasResourceProperties(jsii.String("AWS::DynamoDB::Table"), map[string]any{
+		"PointInTimeRecoverySpecification": map[string]any{"PointInTimeRecoveryEnabled": true},
+		"SSESpecification":                 map[string]any{"SSEEnabled": true},
+	})
+	for _, q := range *template.FindResources(jsii.String("AWS::SQS::Queue"), nil) {
+		if (*q)["Properties"].(map[string]any)["SqsManagedSseEnabled"] != true {
+			t.Fatalf("queue without SSE-SQS: %v", *q)
+		}
+	}
+	template.ResourceCountIs(jsii.String("AWS::SQS::QueuePolicy"), jsii.Number(2))
+	template.HasResourceProperties(jsii.String("AWS::SQS::QueuePolicy"), map[string]any{
+		"PolicyDocument": map[string]any{"Statement": assertions.Match_ArrayWith(&[]any{assertions.Match_ObjectLike(&map[string]any{
+			"Effect":    "Deny",
+			"Condition": map[string]any{"Bool": map[string]any{"aws:SecureTransport": "false"}},
+		})})},
+	})
+	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
+		"MetricName": "ApproximateAgeOfOldestMessage",
+		"Threshold":  queueAgeAlarmS,
+	})
+	template.HasResourceProperties(jsii.String("AWS::CloudWatch::Alarm"), map[string]any{
+		"MetricName":        "ItemEndToEndMs",
+		"Namespace":         metricsNamespace,
+		"ExtendedStatistic": "p99",
+		"Threshold":         itemEndToEndAlarmMs,
+	})
+}
+
 func TestStackHasTheDLQAndItsConsumer(t *testing.T) {
 	t.Cleanup(jsii.Close)
 	app := awscdk.NewApp(nil)
@@ -124,12 +158,17 @@ func TestStackHasTheDLQAndItsConsumer(t *testing.T) {
 			"maxReceiveCount":     3,
 		},
 	})
-	for _, source := range []struct{ queue, fn *string }{{queue, worker}, {dlq, consumer}} {
+	for _, source := range []struct {
+		queue, fn *string
+		batch     int
+		window    any
+	}{{queue, worker, int(workerBatch()), workerBatchingWindow}, {dlq, consumer, sqsBatchSize, assertions.Match_Absent()}} {
 		template.HasResourceProperties(jsii.String("AWS::Lambda::EventSourceMapping"), map[string]any{
-			"EventSourceArn":        map[string]any{"Fn::GetAtt": []any{*source.queue, "Arn"}},
-			"FunctionName":          map[string]any{"Ref": *source.fn},
-			"BatchSize":             10,
-			"FunctionResponseTypes": []any{"ReportBatchItemFailures"},
+			"EventSourceArn":                 map[string]any{"Fn::GetAtt": []any{*source.queue, "Arn"}},
+			"FunctionName":                   map[string]any{"Ref": *source.fn},
+			"BatchSize":                      source.batch,
+			"MaximumBatchingWindowInSeconds": source.window,
+			"FunctionResponseTypes":          []any{"ReportBatchItemFailures"},
 		})
 	}
 	template.HasResourceProperties(jsii.String("AWS::Lambda::Function"), map[string]any{
@@ -399,6 +438,25 @@ func TestFlociCapsLambdaConcurrency(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestWorkerBatchIs50OnAWSAnd10OnFloci(t *testing.T) {
+	t.Cleanup(jsii.Close)
+	for _, tc := range []struct {
+		endpoint string
+		want     int
+	}{{"", workerBatchSize}, {"http://localhost:4566", sqsBatchSize}} {
+		t.Setenv("AWS_ENDPOINT_URL", tc.endpoint)
+		template := assertions.Template_FromStack(NewStack(awscdk.NewApp(nil), "Test", nil), nil)
+		template.HasResourceProperties(jsii.String("AWS::Lambda::EventSourceMapping"), map[string]any{
+			"FunctionName":                   map[string]any{"Ref": assertions.Match_StringLikeRegexp(jsii.String(workerFunctionID))},
+			"BatchSize":                      tc.want,
+			"MaximumBatchingWindowInSeconds": workerBatchingWindow,
+		})
+		template.HasResourceProperties(jsii.String("AWS::SQS::Queue"), map[string]any{
+			"VisibilityTimeout": lambdaTimeoutS*6 + workerBatchingWindow,
+		})
 	}
 }
 
