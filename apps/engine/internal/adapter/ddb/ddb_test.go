@@ -16,31 +16,31 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 
 	"engine/internal/adapter/ddb"
+	"engine/internal/adapter/sqspub"
 	"engine/internal/batch"
 	"engine/internal/domain"
 	"engine/internal/evaluate"
 	"engine/internal/flocitest"
 )
 
-type store struct {
+type itemsTable struct {
 	*ddb.Items
-	*ddb.Decisions
 	faults *flocitest.Faults
 	cfg    aws.Config
 	tables flocitest.Tables
 }
 
-func newStore(t *testing.T) store {
+func newItemsTable(t *testing.T) itemsTable {
 	t.Helper()
 	cfg, faults := flocitest.Config(t)
 	tables := flocitest.CreateTables(t, cfg)
-	return store{
-		Items:     ddb.NewItems(cfg, tables.Items),
-		Decisions: ddb.NewDecisions(cfg, tables.Decisions),
-		faults:    faults,
-		cfg:       cfg,
-		tables:    tables,
-	}
+	return itemsTable{Items: ddb.NewItems(cfg, tables.Items), faults: faults, cfg: cfg, tables: tables}
+}
+
+func newDecisions(t *testing.T) *ddb.Decisions {
+	t.Helper()
+	cfg, _ := flocitest.Config(t)
+	return ddb.NewDecisions(cfg, flocitest.CreateTables(t, cfg).Decisions)
 }
 
 // newItems gives each customer a version 7 item ID, as batch.Submit does.
@@ -52,7 +52,7 @@ func newItems(customers []domain.Customer) []batch.Item {
 	return items
 }
 
-func create(t *testing.T, st store, batchID string, customers []domain.Customer) []string {
+func create(t *testing.T, st itemsTable, batchID string, customers []domain.Customer) []string {
 	t.Helper()
 	items := newItems(customers)
 	if err := st.Create(t.Context(), batchID, items); err != nil {
@@ -68,7 +68,7 @@ func create(t *testing.T, st store, batchID string, customers []domain.Customer)
 type counters struct{ queued, approved, denied, failed, cancelled int }
 
 // all reads every item of the batch page by page and tallies them by status.
-func all(t *testing.T, st store, batchID string, q batch.PageQuery) ([]batch.Item, counters) {
+func all(t *testing.T, st itemsTable, batchID string, q batch.PageQuery) ([]batch.Item, counters) {
 	t.Helper()
 	var items []batch.Item
 	for {
@@ -103,7 +103,7 @@ func all(t *testing.T, st store, batchID string, q batch.PageQuery) ([]batch.Ite
 	return items, c
 }
 
-func every(t *testing.T, st store, batchID string) ([]batch.Item, counters) {
+func every(t *testing.T, st itemsTable, batchID string) ([]batch.Item, counters) {
 	t.Helper()
 	return all(t, st, batchID, batch.PageQuery{Limit: batch.MaxPageLimit})
 }
@@ -117,7 +117,7 @@ func ids(items []batch.Item) []string {
 }
 
 func TestDecisionRoundTrip(t *testing.T) {
-	st := newStore(t)
+	st := newDecisions(t)
 	r := domain.Result{Name: "Ana", CPFMasked: "390.***.***-05", Decision: domain.Approved, RevolvingAmountCents: 250_000, Reasons: []string{"eligible"}}
 	if err := st.Save(t.Context(), "d1", domain.Customer{Name: "Ana", CPF: "39053344705"}, r); err != nil {
 		t.Fatal(err)
@@ -135,7 +135,7 @@ func TestDecisionRoundTrip(t *testing.T) {
 }
 
 func TestBatchTransitions(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	// 1000 items of ~2 KB push each Query past one 1 MB response, and the
 	// write past one BatchWriteItem chunk.
 	customers := make([]domain.Customer, 1000)
@@ -188,7 +188,7 @@ func TestBatchTransitions(t *testing.T) {
 }
 
 func TestFailRetryCancelTransitions(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	ctx := t.Context()
 	id := create(t, st, "b1", []domain.Customer{{Name: "Ana", CPF: "39053344705"}, {Name: "Bruno", CPF: "12345678909"}, {Name: "Carla", CPF: "98765432100"}})
 	missing := uuid.NewV7().String()
@@ -257,7 +257,7 @@ func TestFailRetryCancelTransitions(t *testing.T) {
 }
 
 func TestRetryManyMovesFailedItems(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	ctx := t.Context()
 	id := create(t, st, "b1", []domain.Customer{{Name: "Ana", CPF: "39053344705"}, {Name: "Bruno", CPF: "12345678909"}, {Name: "Carla", CPF: "98765432100"}})
 	for _, i := range id[:2] {
@@ -283,7 +283,7 @@ func TestRetryManyMovesFailedItems(t *testing.T) {
 }
 
 func TestRetryManyMovesManyItems(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	ctx := t.Context()
 	n := 51
 	customers := make([]domain.Customer, n)
@@ -308,7 +308,7 @@ func TestRetryManyMovesManyItems(t *testing.T) {
 // Workers decide items of one batch in parallel. Each transition writes only
 // its own item, so none of them conflicts with another.
 func TestConcurrentDecidesOnOneBatch(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	ctx := t.Context()
 	n := 200
 	customers := make([]domain.Customer, n)
@@ -333,7 +333,7 @@ func TestConcurrentDecidesOnOneBatch(t *testing.T) {
 // Ten items, even ones failed: pages of 3 over all items and pages of 2 over
 // the failed ones both come back full and in submission order.
 func TestPageFollowsTheCursorAndTheFilter(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	ctx := t.Context()
 	customers := make([]domain.Customer, 10)
 	for i := range customers {
@@ -384,7 +384,7 @@ func TestPageFollowsTheCursorAndTheFilter(t *testing.T) {
 // A batch always has items, so no rows scanned means an unknown batch, and
 // rows scanned with none matching is an empty page.
 func TestPageTellsAnUnknownBatchFromNoMatch(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	create(t, st, "b1", []domain.Customer{{Name: "Ana", CPF: "39053344705"}})
 	p, err := st.Page(t.Context(), "b1", batch.PageQuery{Status: batch.Cancelled, Limit: 10})
 	if err != nil || len(p.Items) != 0 || p.More {
@@ -400,7 +400,7 @@ func TestPageTellsAnUnknownBatchFromNoMatch(t *testing.T) {
 // A filtered page takes several Query calls. A failure on a later one fails
 // the page instead of returning a short one.
 func TestPageFailsOnAFailedLaterQuery(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	customers := make([]domain.Customer, 6)
 	for i := range customers {
 		customers[i] = domain.Customer{Name: "Ana", CPF: "39053344705"}
@@ -423,7 +423,7 @@ func TestCreateLogsTheBatchWhenTheRollbackFails(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	st := newStore(t)
+	st := newItemsTable(t)
 	st.faults.FailCalls("BatchWriteItem", 1)
 	st.faults.FailCalls("Query", 1)
 	customers := make([]domain.Customer, 30)
@@ -446,7 +446,7 @@ func TestCreateLogsTheBatchWhenTheRollbackFails(t *testing.T) {
 // The rollback runs on its own deadline: a request that already timed out
 // still removes the rows it wrote.
 func TestCreateRollsBackAfterTheRequestDeadline(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	st.faults.FailCalls("BatchWriteItem", 1)
 	ctx, cancel := context.WithCancel(t.Context())
 	customers := make([]domain.Customer, 30)
@@ -469,7 +469,7 @@ func TestCreateRollsBackAfterTheRequestDeadline(t *testing.T) {
 // it and still has time to delete what it wrote. Before, a batch written by a
 // timed-out invocation stayed behind and was evaluated.
 func TestCreateStopsWritingInTimeToRollBack(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 1500*time.Millisecond)
 	defer cancel()
 	customers := make([]domain.Customer, 30)
@@ -493,7 +493,7 @@ func TestCreateStopsWritingInTimeToRollBack(t *testing.T) {
 }
 
 func TestCreateRemovesPartialRowsOnWriteFailure(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	st.faults.FailCalls("BatchWriteItem", 1)
 	customers := make([]domain.Customer, 30)
 	for i := range customers {
@@ -510,16 +510,13 @@ func TestCreateRemovesPartialRowsOnWriteFailure(t *testing.T) {
 	}
 }
 
-// The stream carries every row change. Only batch item changes become item
-// events; a decision row and a removal do not.
+// The BatchItems stream carries every item change. A removal is not an item
+// event.
 func TestStreamRecordsBecomeItemEvents(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	ctx := t.Context()
 	id := create(t, st, "b1", []domain.Customer{{Name: "Ana", CPF: "39053344705"}})
 	if err := st.Decide(ctx, "b1", id[0], 1, domain.Result{Decision: domain.Approved}); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Save(ctx, "d1", domain.Customer{Name: "Ana", CPF: "39053344705"}, domain.Result{Decision: domain.Approved}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -555,7 +552,7 @@ func TestStreamRecordsBecomeItemEvents(t *testing.T) {
 // ADR 0007: a list by status reads the StatusIndex, so every transition must
 // move the item's batch_status with its status.
 func TestTheStatusIndexFollowsEveryTransition(t *testing.T) {
-	st := newStore(t)
+	st := newItemsTable(t)
 	ctx := t.Context()
 	customers := make([]domain.Customer, 4)
 	for i := range customers {
@@ -588,40 +585,8 @@ func TestTheStatusIndexFollowsEveryTransition(t *testing.T) {
 	}
 }
 
-// ADR 0006: each port writes only its own table.
-func TestEachPortWritesOnlyItsOwnTable(t *testing.T) {
-	st := newStore(t)
-	ctx := t.Context()
-	k := ddb.NewKeys(st.cfg, st.tables.Keys)
-	counts := func() [3]int {
-		return [3]int{
-			flocitest.Rows(t, st.cfg, st.tables.Decisions),
-			flocitest.Rows(t, st.cfg, st.tables.Items),
-			flocitest.Rows(t, st.cfg, st.tables.Keys),
-		}
-	}
-
-	if err := st.Save(ctx, "d1", domain.Customer{Name: "Ana", CPF: "39053344705"}, domain.Result{Decision: domain.Approved}); err != nil {
-		t.Fatal(err)
-	}
-	if got := counts(); got != [3]int{1, 0, 0} {
-		t.Fatalf("after a decision: %v", got)
-	}
-	create(t, st, "b1", []domain.Customer{{Name: "Ana", CPF: "39053344705"}, {Name: "Bruno", CPF: "12345678909"}})
-	if got := counts(); got != [3]int{1, 2, 0} {
-		t.Fatalf("after a batch: %v", got)
-	}
-	if _, _, err := k.Claim(ctx, "key", claimAt("fp", time.Now())); err != nil {
-		t.Fatal(err)
-	}
-	if got := counts(); got != [3]int{1, 2, 1} {
-		t.Fatalf("after a key: %v", got)
-	}
-}
-
-// The worker and the DLQ consumer get only the BatchItems table name, as the
-// stack gives them only BatchItems (ADR 0006). Every batch.Items method works
-// with it.
+// Every batch.Items method works against the BatchItems table the worker and
+// the DLQ consumer receive (ADR 0006).
 func TestItemsNeedOnlyTheBatchItemsTable(t *testing.T) {
 	cfg, _ := flocitest.Config(t)
 	tables := flocitest.CreateTables(t, cfg)
@@ -652,5 +617,54 @@ func TestItemsNeedOnlyTheBatchItemsTable(t *testing.T) {
 		if p, err := st.Page(ctx, "b1", q); err != nil || len(p.Items) == 0 {
 			t.Fatalf("%+v: page=%+v err=%v", q, p, err)
 		}
+	}
+}
+
+func TestRelayHandlePublishesQueuedItems(t *testing.T) {
+	st := newItemsTable(t)
+	create(t, st, "b1", []domain.Customer{{Name: "Ana", CPF: "39053344705"}})
+	queue := flocitest.Queue(t, st.cfg)
+	resp, err := ddb.NewRelay(batch.New(batch.Deps{Publisher: sqspub.New(st.cfg, queue)})).Handle(
+		t.Context(), flocitest.TableStream(t, st.cfg, st.tables.Items).Next())
+	if err != nil || len(resp.BatchItemFailures) != 0 {
+		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+}
+
+func TestRelayHandleReportsAFailedPublish(t *testing.T) {
+	st := newItemsTable(t)
+	create(t, st, "b1", []domain.Customer{{Name: "Ana", CPF: "39053344705"}})
+	queue := flocitest.Queue(t, st.cfg)
+	st.faults.FailCalls("SendMessageBatch", 1)
+	ev := flocitest.TableStream(t, st.cfg, st.tables.Items).Next()
+	resp, err := ddb.NewRelay(batch.New(batch.Deps{Publisher: sqspub.New(st.cfg, queue)})).Handle(t.Context(), ev)
+	if err != nil || len(resp.BatchItemFailures) != 1 {
+		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+	if resp.BatchItemFailures[0].ItemIdentifier != ev.Records[0].Change.SequenceNumber {
+		t.Fatalf("failure=%q want sequence %q", resp.BatchItemFailures[0].ItemIdentifier, ev.Records[0].Change.SequenceNumber)
+	}
+}
+
+func TestRelayHandleSkipsRemovalsAndUnreadableRecords(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	resp, err := ddb.NewRelay(batch.New(batch.Deps{})).Handle(t.Context(), events.DynamoDBEvent{
+		Records: []events.DynamoDBEventRecord{
+			{EventID: "r1", EventName: "REMOVE"},
+			{EventID: "r2", EventName: "INSERT", Change: events.DynamoDBStreamRecord{
+				NewImage: map[string]events.DynamoDBAttributeValue{"batch_id": events.NewStringAttribute("b1")},
+			}},
+		},
+	})
+	if err != nil || len(resp.BatchItemFailures) != 0 {
+		t.Fatalf("resp=%+v err=%v", resp, err)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, `"msg":"stream_record_skipped"`) || !strings.Contains(logs, `"event_id":"r2"`) {
+		t.Fatalf("logs=%s", logs)
 	}
 }

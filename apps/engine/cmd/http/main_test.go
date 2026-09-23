@@ -21,6 +21,16 @@ func TestComposeNeedsTheThreeTables(t *testing.T) {
 	}
 }
 
+func TestComposeNeedsAValidBatchSize(t *testing.T) {
+	t.Setenv("DECISIONS_TABLE", "d")
+	t.Setenv("BATCH_ITEMS_TABLE", "i")
+	t.Setenv("IDEMPOTENCY_KEYS_TABLE", "k")
+	t.Setenv("BATCH_SIZE", "nope")
+	if _, err := compose(t.Context()); err == nil || !strings.Contains(err.Error(), "BATCH_SIZE") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 // The HTTP Lambda as the stack wires it: each route writes its own table.
 func TestTheHTTPLambdaWritesEachRouteToItsTable(t *testing.T) {
 	cfg, _ := flocitest.Config(t)

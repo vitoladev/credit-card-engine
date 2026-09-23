@@ -7,13 +7,14 @@ import (
 	"uuid"
 
 	"engine/internal/adapter/ddb"
+	"engine/internal/flocitest"
 	"engine/internal/idempotency"
 )
 
 func newKeys(t *testing.T) ddb.Keys {
 	t.Helper()
-	st := newStore(t)
-	return ddb.NewKeys(st.cfg, st.tables.Keys)
+	cfg, _ := flocitest.Config(t)
+	return ddb.NewKeys(cfg, flocitest.CreateTables(t, cfg).Keys)
 }
 
 func claimAt(fp string, now time.Time) idempotency.Claim {
