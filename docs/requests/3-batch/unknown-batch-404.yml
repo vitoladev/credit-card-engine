@@ -1,25 +1,35 @@
 info:
-  name: 'Unknown batch: 404'
+  name: "Unknown batch: 404"
   type: http
-  seq: 10
+  seq: 11
+
 http:
   method: GET
-  url: '{{baseUrl}}/batches/00000000-0000-0000-0000-000000000000/items'
+  url: "{{baseUrl}}/batches/00000000-0000-0000-0000-000000000000/items"
   auth: inherit
+
 runtime:
   assertions:
-  - expression: res.status
-    operator: eq
-    value: '404'
+    - expression: res.status
+      operator: eq
+      value: "404"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
 examples:
   - name: "404"
     description: Captured from a Floci run. IDs change each run.
     request:
-      method: GET
       url: "{{baseUrl}}/batches/00000000-0000-0000-0000-000000000000/items"
+      method: GET
     response:
       status: 404
-      statusText: "Not Found"
+      statusText: Not Found
       body:
         type: json
         data: |-

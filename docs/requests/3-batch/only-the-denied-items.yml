@@ -1,33 +1,43 @@
 info:
   name: Only the denied items
   type: http
-  seq: 6
+  seq: 7
+
 http:
   method: GET
-  url: '{{baseUrl}}/batches/{{batchId}}/items?status=DENIED'
-  auth: inherit
+  url: "{{baseUrl}}/batches/{{batchId}}/items?status=DENIED"
   params:
-  - name: status
-    value: DENIED
-    type: query
+    - name: status
+      value: DENIED
+      type: query
+  auth: inherit
+
 runtime:
   assertions:
-  - expression: res.status
-    operator: eq
-    value: '200'
+    - expression: res.status
+      operator: eq
+      value: "200"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
 examples:
   - name: "200"
     description: Captured from a Floci run. IDs change each run.
     request:
-      method: GET
       url: "{{baseUrl}}/batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?status=DENIED"
+      method: GET
       params:
-      - name: "status"
-        value: "DENIED"
-        type: query
+        - name: status
+          value: DENIED
+          type: query
     response:
       status: 200
-      statusText: "OK"
+      statusText: OK
       body:
         type: json
         data: |-
@@ -69,4 +79,5 @@ examples:
               }
             ]
           }
-docs: 'Reads the by-status index: only the items in that status (ADR 0007).'
+
+docs: "Reads the by-status index: only the items in that status (ADR 0007)."

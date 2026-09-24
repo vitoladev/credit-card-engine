@@ -341,7 +341,10 @@ func TestPageFollowsTheCursorAndTheFilter(t *testing.T) {
 	}
 	id := create(t, st, "b1", customers)
 	var even []string
-	for i := 0; i < len(id); i += 2 {
+	for i := range id {
+		if i%2 != 0 {
+			continue
+		}
 		if err := st.Fail(ctx, "b1", id[i], 1); err != nil {
 			t.Fatal(err)
 		}

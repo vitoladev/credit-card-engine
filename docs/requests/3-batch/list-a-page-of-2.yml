@@ -1,36 +1,46 @@
 info:
   name: List a page of 2
   type: http
-  seq: 4
+  seq: 5
+
 http:
   method: GET
-  url: '{{baseUrl}}/batches/{{batchId}}/items?limit=2'
-  auth: inherit
+  url: "{{baseUrl}}/batches/{{batchId}}/items?limit=2"
   params:
-  - name: limit
-    value: '2'
-    type: query
+    - name: limit
+      value: "2"
+      type: query
+  auth: inherit
+
 runtime:
-  assertions:
-  - expression: res.status
-    operator: eq
-    value: '200'
   scripts:
-  - type: after-response
-    code: bru.setVar("cursor", res.body.next_cursor || "");
+    - type: after-response
+      code: bru.setVar("cursor", res.body.next_cursor || "");
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "200"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
 examples:
   - name: "200"
     description: Captured from a Floci run. IDs change each run.
     request:
-      method: GET
       url: "{{baseUrl}}/batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?limit=2"
+      method: GET
       params:
-      - name: "limit"
-        value: "2"
-        type: query
+        - name: limit
+          value: "2"
+          type: query
     response:
       status: 200
-      statusText: "OK"
+      statusText: OK
       body:
         type: json
         data: |-
@@ -62,4 +72,5 @@ examples:
             ],
             "next_cursor": "MDFhMGNmNzUtOTk3Yi03M2ZiLWI4ZmMtY2ZhOTY0Yjc1NGVk"
           }
+
 docs: Saves next_cursor for the next request. The last page has no next_cursor.

@@ -1,11 +1,11 @@
 info:
-  name: 'Approved: Ana'
+  name: "Approved: Ana"
   type: http
   seq: 1
+
 http:
   method: POST
-  url: '{{baseUrl}}/evaluations'
-  auth: inherit
+  url: "{{baseUrl}}/evaluations"
   body:
     type: json
     data: |-
@@ -22,29 +22,39 @@ http:
           70000
         ]
       }
+  auth: inherit
+
 runtime:
-  assertions:
-  - expression: res.status
-    operator: eq
-    value: '200'
   scripts:
-  - type: tests
-    code: |-
-      test("Approved: Ana", function () {
-        expect(res.body.decision).to.equal("APPROVED");
-        expect(res.body.cpf_masked).to.equal("390.***.***-05");
-      });
-  - type: after-response
-    code: bru.setVar("decisionId", res.body.decision_id);
+    - type: after-response
+      code: bru.setVar("decisionId", res.body.decision_id);
+    - type: tests
+      code: |-
+        test("Approved: Ana", function () {
+          expect(res.body.decision).to.equal("APPROVED");
+          expect(res.body.cpf_masked).to.equal("390.***.***-05");
+        });
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "200"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
 examples:
   - name: "200"
     description: Captured from a Floci run. IDs change each run.
     request:
-      method: POST
       url: "{{baseUrl}}/evaluations"
+      method: POST
       headers:
-      - name: "content-type"
-        value: "application/json"
+        - name: content-type
+          value: application/json
       body:
         type: json
         data: |-
@@ -63,7 +73,7 @@ examples:
           }
     response:
       status: 200
-      statusText: "OK"
+      statusText: OK
       body:
         type: json
         data: |-
@@ -77,5 +87,5 @@ examples:
               "eligible"
             ]
           }
-docs: 'Score 780, invoice under the limit, spend under 90%: approved with 50% of the limit, capped at
-  limit minus invoice (R$ 2.500,00).'
+
+docs: "Score 780, invoice under the limit, spend under 90%: approved with 50% of the limit, capped at limit minus invoice (R$ 2.500,00)."

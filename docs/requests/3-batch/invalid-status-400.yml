@@ -1,39 +1,49 @@
 info:
-  name: 'Invalid status: 400'
+  name: "Invalid status: 400"
   type: http
-  seq: 9
+  seq: 10
+
 http:
   method: GET
-  url: '{{baseUrl}}/batches/{{batchId}}/items?status=BOGUS'
-  auth: inherit
+  url: "{{baseUrl}}/batches/{{batchId}}/items?status=BOGUS"
   params:
-  - name: status
-    value: BOGUS
-    type: query
+    - name: status
+      value: BOGUS
+      type: query
+  auth: inherit
+
 runtime:
-  assertions:
-  - expression: res.status
-    operator: eq
-    value: '400'
   scripts:
-  - type: tests
-    code: |-
-      test("Invalid status: 400", function () {
-        expect(res.body.error).to.equal("invalid_status");
-      });
+    - type: tests
+      code: |-
+        test("Invalid status: 400", function () {
+          expect(res.body.error).to.equal("invalid_status");
+        });
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "400"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
 examples:
   - name: "400"
     description: Captured from a Floci run. IDs change each run.
     request:
-      method: GET
       url: "{{baseUrl}}/batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?status=BOGUS"
+      method: GET
       params:
-      - name: "status"
-        value: "BOGUS"
-        type: query
+        - name: status
+          value: BOGUS
+          type: query
     response:
       status: 400
-      statusText: "Bad Request"
+      statusText: Bad Request
       body:
         type: json
         data: |-

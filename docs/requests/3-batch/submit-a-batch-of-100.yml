@@ -1,0 +1,1461 @@
+info:
+  name: Submit a batch of 100
+  type: http
+  seq: 3
+
+http:
+  method: POST
+  url: "{{baseUrl}}/evaluations/batch"
+  body:
+    type: json
+    data: |-
+      [
+        {
+          "name": "Ana 001",
+          "cpf": "100.007.919-89",
+          "credit_score": 737,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Bruno 002",
+          "cpf": "100.015.838-16",
+          "credit_score": 800,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Carla 003",
+          "cpf": "100.023.757-53",
+          "credit_score": 730,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Diego 004",
+          "cpf": "100.031.676-90",
+          "credit_score": 341,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Elisa 005",
+          "cpf": "100.039.595-20",
+          "credit_score": 687,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Fábio 006",
+          "cpf": "100.047.514-00",
+          "credit_score": 705,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Gabriela 007",
+          "cpf": "100.055.433-39",
+          "credit_score": 834,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Helena 008",
+          "cpf": "100.063.352-76",
+          "credit_score": 656,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Igor 009",
+          "cpf": "100.071.271-03",
+          "credit_score": 509,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Joana 010",
+          "cpf": "100.079.190-42",
+          "credit_score": 723,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 3,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Ana 011",
+          "cpf": "100.087.109-61",
+          "credit_score": 850,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Bruno 012",
+          "cpf": "100.095.028-07",
+          "credit_score": 839,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Carla 013",
+          "cpf": "100.102.947-08",
+          "credit_score": 666,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Diego 014",
+          "cpf": "100.110.866-37",
+          "credit_score": 383,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Elisa 015",
+          "cpf": "100.118.785-76",
+          "credit_score": 662,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Fábio 016",
+          "cpf": "100.126.704-48",
+          "credit_score": 734,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Gabriela 017",
+          "cpf": "100.134.623-85",
+          "credit_score": 652,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Helena 018",
+          "cpf": "100.142.542-12",
+          "credit_score": 775,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Igor 019",
+          "cpf": "100.150.461-50",
+          "credit_score": 473,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Joana 020",
+          "cpf": "100.158.380-99",
+          "credit_score": 758,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 3,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Ana 021",
+          "cpf": "100.166.299-73",
+          "credit_score": 722,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Bruno 022",
+          "cpf": "100.174.218-45",
+          "credit_score": 847,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Carla 023",
+          "cpf": "100.182.137-82",
+          "credit_score": 684,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Diego 024",
+          "cpf": "100.190.056-10",
+          "credit_score": 552,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Elisa 025",
+          "cpf": "100.197.975-32",
+          "credit_score": 657,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Fábio 026",
+          "cpf": "100.205.894-50",
+          "credit_score": 662,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Gabriela 027",
+          "cpf": "100.213.813-21",
+          "credit_score": 800,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Helena 028",
+          "cpf": "100.221.732-69",
+          "credit_score": 803,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Igor 029",
+          "cpf": "100.229.651-06",
+          "credit_score": 568,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Joana 030",
+          "cpf": "100.237.570-35",
+          "credit_score": 786,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 3,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Ana 031",
+          "cpf": "100.245.489-10",
+          "credit_score": 705,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Bruno 032",
+          "cpf": "100.253.408-91",
+          "credit_score": 796,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Carla 033",
+          "cpf": "100.261.327-29",
+          "credit_score": 669,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Diego 034",
+          "cpf": "100.269.246-68",
+          "credit_score": 407,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Elisa 035",
+          "cpf": "100.277.165-03",
+          "credit_score": 719,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Fábio 036",
+          "cpf": "100.285.084-32",
+          "credit_score": 722,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Gabriela 037",
+          "cpf": "100.293.003-04",
+          "credit_score": 778,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Helena 038",
+          "cpf": "100.300.922-05",
+          "credit_score": 759,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Igor 039",
+          "cpf": "100.308.841-44",
+          "credit_score": 542,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Joana 040",
+          "cpf": "100.316.760-81",
+          "credit_score": 670,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 3,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Ana 041",
+          "cpf": "100.324.679-66",
+          "credit_score": 644,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Bruno 042",
+          "cpf": "100.332.598-01",
+          "credit_score": 674,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Carla 043",
+          "cpf": "100.340.517-75",
+          "credit_score": 651,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Diego 044",
+          "cpf": "100.348.436-04",
+          "credit_score": 505,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Elisa 045",
+          "cpf": "100.356.355-41",
+          "credit_score": 758,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Fábio 046",
+          "cpf": "100.364.274-89",
+          "credit_score": 735,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Gabriela 047",
+          "cpf": "100.372.193-16",
+          "credit_score": 754,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Helena 048",
+          "cpf": "100.380.112-98",
+          "credit_score": 726,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Igor 049",
+          "cpf": "100.388.031-27",
+          "credit_score": 339,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Joana 050",
+          "cpf": "100.395.950-48",
+          "credit_score": 722,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 3,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Ana 051",
+          "cpf": "100.403.869-02",
+          "credit_score": 668,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Bruno 052",
+          "cpf": "100.411.788-40",
+          "credit_score": 719,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Carla 053",
+          "cpf": "100.419.707-13",
+          "credit_score": 689,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Diego 054",
+          "cpf": "100.427.626-50",
+          "credit_score": 450,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Elisa 055",
+          "cpf": "100.435.545-98",
+          "credit_score": 723,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Fábio 056",
+          "cpf": "100.443.464-25",
+          "credit_score": 676,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Gabriela 057",
+          "cpf": "100.451.383-62",
+          "credit_score": 838,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Helena 058",
+          "cpf": "100.459.302-36",
+          "credit_score": 702,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Igor 059",
+          "cpf": "100.467.221-73",
+          "credit_score": 394,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Joana 060",
+          "cpf": "100.475.140-00",
+          "credit_score": 625,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 3,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Ana 061",
+          "cpf": "100.483.059-95",
+          "credit_score": 836,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Bruno 062",
+          "cpf": "100.490.978-06",
+          "credit_score": 660,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Carla 063",
+          "cpf": "100.498.897-45",
+          "credit_score": 794,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Diego 064",
+          "cpf": "100.506.816-05",
+          "credit_score": 559,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Elisa 065",
+          "cpf": "100.514.735-34",
+          "credit_score": 664,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Fábio 066",
+          "cpf": "100.522.654-71",
+          "credit_score": 806,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Gabriela 067",
+          "cpf": "100.530.573-09",
+          "credit_score": 674,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Helena 068",
+          "cpf": "100.538.492-48",
+          "credit_score": 638,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Igor 069",
+          "cpf": "100.546.411-10",
+          "credit_score": 369,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Joana 070",
+          "cpf": "100.554.330-57",
+          "credit_score": 769,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 3,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Ana 071",
+          "cpf": "100.562.249-31",
+          "credit_score": 786,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Bruno 072",
+          "cpf": "100.570.168-79",
+          "credit_score": 840,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Carla 073",
+          "cpf": "100.578.087-08",
+          "credit_score": 632,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Diego 074",
+          "cpf": "100.586.006-80",
+          "credit_score": 479,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Elisa 075",
+          "cpf": "100.593.925-09",
+          "credit_score": 637,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Fábio 076",
+          "cpf": "100.601.844-18",
+          "credit_score": 726,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Gabriela 077",
+          "cpf": "100.609.763-57",
+          "credit_score": 743,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Helena 078",
+          "cpf": "100.617.682-94",
+          "credit_score": 695,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Igor 079",
+          "cpf": "100.625.601-66",
+          "credit_score": 375,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Joana 080",
+          "cpf": "100.633.520-01",
+          "credit_score": 814,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 3,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Ana 081",
+          "cpf": "100.641.439-88",
+          "credit_score": 663,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Bruno 082",
+          "cpf": "100.649.358-17",
+          "credit_score": 803,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Carla 083",
+          "cpf": "100.657.277-54",
+          "credit_score": 785,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Diego 084",
+          "cpf": "100.665.196-91",
+          "credit_score": 541,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Elisa 085",
+          "cpf": "100.673.115-63",
+          "credit_score": 678,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Fábio 086",
+          "cpf": "100.681.034-09",
+          "credit_score": 678,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Gabriela 087",
+          "cpf": "100.688.953-13",
+          "credit_score": 677,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Helena 088",
+          "cpf": "100.696.872-50",
+          "credit_score": 760,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Igor 089",
+          "cpf": "100.704.791-78",
+          "credit_score": 326,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Joana 090",
+          "cpf": "100.712.710-40",
+          "credit_score": 709,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 3,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Ana 091",
+          "cpf": "100.720.629-24",
+          "credit_score": 672,
+          "current_invoice_cents": 120000,
+          "credit_limit_cents": 1200000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            240000,
+            300000,
+            200000
+          ]
+        },
+        {
+          "name": "Bruno 092",
+          "cpf": "100.728.548-63",
+          "credit_score": 791,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Carla 093",
+          "cpf": "100.736.467-09",
+          "credit_score": 627,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Diego 094",
+          "cpf": "100.744.386-38",
+          "credit_score": 320,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Elisa 095",
+          "cpf": "100.752.305-00",
+          "credit_score": 738,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 2,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        },
+        {
+          "name": "Fábio 096",
+          "cpf": "100.760.224-47",
+          "credit_score": 649,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 0,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Gabriela 097",
+          "cpf": "100.768.143-86",
+          "credit_score": 845,
+          "current_invoice_cents": 80000,
+          "credit_limit_cents": 800000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            160000,
+            200000,
+            133333
+          ]
+        },
+        {
+          "name": "Helena 098",
+          "cpf": "100.776.062-13",
+          "credit_score": 780,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Igor 099",
+          "cpf": "100.783.981-34",
+          "credit_score": 524,
+          "current_invoice_cents": 30000,
+          "credit_limit_cents": 300000,
+          "late_payments": 1,
+          "monthly_spend_cents": [
+            60000,
+            75000,
+            50000
+          ]
+        },
+        {
+          "name": "Joana 100",
+          "cpf": "100.791.900-06",
+          "credit_score": 703,
+          "current_invoice_cents": 50000,
+          "credit_limit_cents": 500000,
+          "late_payments": 3,
+          "monthly_spend_cents": [
+            100000,
+            125000,
+            83333
+          ]
+        }
+      ]
+  auth: inherit
+
+runtime:
+  scripts:
+    - type: after-response
+      code: |-
+        bru.setVar("batchId", res.body.batch_id);
+        bru.setVar("itemId", res.body.item_ids[0]);
+    - type: tests
+      code: |-
+        test("Submit a batch of 100", function () {
+          expect(res.body.queued).to.equal(100);
+        });
+  assertions:
+    - expression: res.status
+      operator: eq
+      value: "202"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
+examples:
+  - name: "202"
+    description: Captured from a Floci run. IDs change each run.
+    request:
+      url: "{{baseUrl}}/evaluations/batch"
+      method: POST
+      headers:
+        - name: content-type
+          value: application/json
+    response:
+      status: 202
+      statusText: Accepted
+      body:
+        type: json
+        data: |-
+          {
+            "batch_id": "2fc4f195-3c34-41fc-b3c7-1cdbb9259745",
+            "queued": 100,
+            "item_ids": [
+              "01a0d4d8-cf22-771c-9114-98ece024529f",
+              "01a0d4d8-cf22-771f-965b-27667fb9e22f",
+              "01a0d4d8-cf22-7721-9de7-3a8cc5f82421",
+              "01a0d4d8-cf22-7723-b2db-ae4ececd5738",
+              "01a0d4d8-cf22-7725-b23e-fd30f95a0008",
+              "01a0d4d8-cf22-7727-9825-280aa44e7297",
+              "01a0d4d8-cf22-7729-809a-fff2fd94c3e7",
+              "01a0d4d8-cf22-772c-a2c7-77cad546d5a3",
+              "01a0d4d8-cf22-772e-a8a2-4af5540ef7e5",
+              "01a0d4d8-cf22-7730-8494-60b5c9cb41bf",
+              "01a0d4d8-cf22-7732-82a5-c3ec5bab602d",
+              "01a0d4d8-cf22-7734-bc6d-2117cfa7885e",
+              "01a0d4d8-cf22-7735-8da4-e7a96bb47a80",
+              "01a0d4d8-cf22-7737-893f-1dfb77ad4e02",
+              "01a0d4d8-cf22-7739-a790-b6514d176050",
+              "01a0d4d8-cf22-773b-874a-c1c9c53d3262",
+              "01a0d4d8-cf22-773d-81e8-4a2d9caa1bc6",
+              "01a0d4d8-cf22-773e-95af-01098a4d66cc",
+              "01a0d4d8-cf22-7743-a089-647da79113c4",
+              "01a0d4d8-cf22-7745-b2a9-2db592f246ee",
+              "01a0d4d8-cf22-7747-bed1-94b8f619ef40",
+              "01a0d4d8-cf22-7748-8c33-9cacfd8106bc",
+              "01a0d4d8-cf22-774a-b064-341327ce8332",
+              "01a0d4d8-cf22-774c-8fb3-b07e979dba00",
+              "01a0d4d8-cf22-774e-9017-911bc7d5b6dd",
+              "01a0d4d8-cf22-7750-8614-aea7c6f93e0e",
+              "01a0d4d8-cf22-7751-b9b1-e456a7f385da",
+              "01a0d4d8-cf22-7753-940b-d6a044c0530d",
+              "01a0d4d8-cf22-7755-9925-4a8173d8813b",
+              "01a0d4d8-cf22-7757-aac6-0118d631e65a",
+              "01a0d4d8-cf22-7759-8be3-419586597549",
+              "01a0d4d8-cf22-775b-a21b-e354df1a3cc3",
+              "01a0d4d8-cf22-775c-8f5e-e1dbc3e30f3f",
+              "01a0d4d8-cf22-775e-9089-fa6c450b2ac8",
+              "01a0d4d8-cf22-7760-8f9c-b50e6115b9d8",
+              "01a0d4d8-cf22-7762-a4dd-bd1edf7040ce",
+              "01a0d4d8-cf22-7767-8bd9-74ee15ceb946",
+              "01a0d4d8-cf22-7769-888f-f61cfd5a0cd6",
+              "01a0d4d8-cf22-776b-b5c4-685496d21aa3",
+              "01a0d4d8-cf22-776c-81ba-96d283a4458f",
+              "01a0d4d8-cf22-776e-972d-fe9c8cd927e3",
+              "01a0d4d8-cf22-7770-a0f1-84b2ccaa370a",
+              "01a0d4d8-cf22-7772-8801-244cf46184ed",
+              "01a0d4d8-cf22-7773-b25a-6c5db22974f1",
+              "01a0d4d8-cf22-7775-a58f-41e5dfbd212c",
+              "01a0d4d8-cf22-7777-9c05-0ac4dddc4f30",
+              "01a0d4d8-cf22-7779-9aaf-5826d2b60fda",
+              "01a0d4d8-cf22-777b-b26f-2ff591c9af92",
+              "01a0d4d8-cf22-777d-8f9f-aa9eefaf3cef",
+              "01a0d4d8-cf22-777f-abdd-619bb6f294b8",
+              "01a0d4d8-cf22-7780-855f-8ce3292c2a25",
+              "01a0d4d8-cf22-7782-9604-feebee8b886b",
+              "01a0d4d8-cf22-7784-b25c-f95a23fee915",
+              "01a0d4d8-cf22-7789-a121-afb14d5c276a",
+              "01a0d4d8-cf22-778b-85d0-a6837bbb5c3b",
+              "01a0d4d8-cf22-778d-92a1-21b4a820f919",
+              "01a0d4d8-cf22-778f-b3ce-fb3a7c7ab12d",
+              "01a0d4d8-cf22-7791-be44-d44c6733af8d",
+              "01a0d4d8-cf22-7793-bf40-4faa594f6007",
+              "01a0d4d8-cf22-7795-9715-5cd8521ab671",
+              "01a0d4d8-cf22-7797-aeeb-ced1ac3fdeda",
+              "01a0d4d8-cf22-7798-8d84-3a078840e994",
+              "01a0d4d8-cf22-779b-be3f-943903506585",
+              "01a0d4d8-cf22-779d-a6b5-d998c1722b20",
+              "01a0d4d8-cf22-779f-8317-3855715d582e",
+              "01a0d4d8-cf22-77a1-84b3-8bcb7d57dac3",
+              "01a0d4d8-cf22-77a3-994e-dc0846ce0050",
+              "01a0d4d8-cf22-77a5-b1a4-8c6f4ac8d39a",
+              "01a0d4d8-cf22-77a6-87c1-e98d251e1cad",
+              "01a0d4d8-cf22-77a8-89ca-02b5b4261683",
+              "01a0d4d8-cf22-77aa-8295-65d2d1cad253",
+              "01a0d4d8-cf22-77af-af4e-e9965b22c863",
+              "01a0d4d8-cf22-77b1-8fe6-c21469d7177b",
+              "01a0d4d8-cf22-77b2-8189-b27915460a0a",
+              "01a0d4d8-cf22-77b4-a5a4-eb46a7b205d9",
+              "01a0d4d8-cf22-77b6-88b9-07cf0c117cf6",
+              "01a0d4d8-cf22-77b8-9d00-44ef52326e6f",
+              "01a0d4d8-cf22-77ba-bf21-a8d97e2e30f1",
+              "01a0d4d8-cf22-77bb-b57a-ec0a841e0319",
+              "01a0d4d8-cf22-77bd-b834-19ab2681ca08",
+              "01a0d4d8-cf22-77bf-873a-61b11ff22c47",
+              "01a0d4d8-cf22-77c1-ac72-9f9402c9ec87",
+              "01a0d4d8-cf22-77c3-9c39-079d93bb5bac",
+              "01a0d4d8-cf22-77c5-a761-d883b868b48c",
+              "01a0d4d8-cf22-77c6-9e00-6bc3e6fb85d9",
+              "01a0d4d8-cf22-77c8-8330-b223d52e0607",
+              "01a0d4d8-cf22-77ca-9916-9c2d2fd5e925",
+              "01a0d4d8-cf22-77cc-932f-5dcfc39bdf69",
+              "01a0d4d8-cf22-77ce-8bf8-553249ac5dfc",
+              "01a0d4d8-cf22-77d2-99b9-f24d4cce3fbf",
+              "01a0d4d8-cf22-77d4-b479-adfcceed9343",
+              "01a0d4d8-cf22-77d6-be17-3813fcc3f005",
+              "01a0d4d8-cf22-77d8-aa39-ba9dc604db1b",
+              "01a0d4d8-cf22-77da-87f0-c18546538cde",
+              "01a0d4d8-cf22-77dc-8638-4cb4c101c764",
+              "01a0d4d8-cf22-77dd-8039-c4b007e3998d",
+              "01a0d4d8-cf22-77df-9671-a9c2c7edfd70",
+              "01a0d4d8-cf22-77e1-9928-2bf397fdf306",
+              "01a0d4d8-cf22-77e3-932d-2409f35ee343",
+              "01a0d4d8-cf22-77e5-9c8f-f7b5f1607d5d"
+            ]
+          }
+
+docs: 100 customers, the default BATCH_SIZE. The 202 comes back at once; on Floci the worker takes about 12 s to decide them all (70 APPROVED, 30 DENIED). Run "Is the batch done?" while it drains to see QUEUED items, then again until the list is empty.

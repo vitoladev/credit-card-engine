@@ -1,39 +1,49 @@
 info:
   name: Is the batch done?
   type: http
-  seq: 8
+  seq: 9
+
 http:
   method: GET
-  url: '{{baseUrl}}/batches/{{batchId}}/items?limit=1&status=QUEUED'
-  auth: inherit
+  url: "{{baseUrl}}/batches/{{batchId}}/items?limit=1&status=QUEUED"
   params:
-  - name: limit
-    value: '1'
-    type: query
-  - name: status
-    value: QUEUED
-    type: query
+    - name: limit
+      value: "1"
+      type: query
+    - name: status
+      value: QUEUED
+      type: query
+  auth: inherit
+
 runtime:
   assertions:
-  - expression: res.status
-    operator: eq
-    value: '200'
+    - expression: res.status
+      operator: eq
+      value: "200"
+
+settings:
+  encodeUrl: true
+  timeout: 0
+  followRedirects: true
+  maxRedirects: 5
+  forwardAuthorizationHeader: true
+
 examples:
   - name: "200"
     description: Captured from a Floci run. IDs change each run.
     request:
-      method: GET
       url: "{{baseUrl}}/batches/9b8156d7-972d-418d-ac1d-0fda6e2918f7/items?limit=1&status=QUEUED"
+      method: GET
       params:
-      - name: "limit"
-        value: "1"
-        type: query
-      - name: "status"
-        value: "QUEUED"
-        type: query
+        - name: limit
+          value: "1"
+          type: query
+        - name: status
+          value: QUEUED
+          type: query
     response:
       status: 200
-      statusText: "OK"
+      statusText: OK
       body:
         type: json
         data: |-
@@ -41,4 +51,5 @@ examples:
             "batch_id": "9b8156d7-972d-418d-ac1d-0fda6e2918f7",
             "items": []
           }
+
 docs: A batch has no status. This call is how a caller sees that no item is still QUEUED.

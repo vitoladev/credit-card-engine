@@ -7,3 +7,5 @@ REQUIREMENTS.md
 *.exe
 node_modules
 .turbo
+# Bruno CLI writes a .bru copy of the OpenCollection under the collection name.
+/docs/requests/Credit Card Engine/

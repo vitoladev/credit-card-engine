@@ -61,7 +61,7 @@ commit and says why.
 
 ## 4. Errors
 
-- Wrap with `fmt.Errorf("...: %w", err)`; compare with `errors.Is` / `errors.As`.
+- Wrap with `fmt.Errorf("...: %w", err)`; compare with `errors.Is` and `errors.AsType`.
 - Sentinel errors are named `ErrX`; error types are named `XError`.
 - Adapters map errors to HTTP status codes; modules never know about HTTP.
   `400` malformed input, `404` unknown id, `409` invalid transition, `422`
